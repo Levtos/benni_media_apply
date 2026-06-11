@@ -80,6 +80,7 @@ class MediaApplyCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self._unsub_state = None
         self._ramp_task = None
         self._ramp_active = False
+        self._apply_state = logic.ApplyState()
         self._last_debug: dict[str, Any] = {}
 
     # ----- profile / binding -----
@@ -206,7 +207,9 @@ class MediaApplyCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         )
 
     def _compute(self) -> dict[str, Any]:
-        plan = logic.decide_apply(self._build_inputs(), self.settings())
+        plan, self._apply_state = logic.decide_apply(
+            self._build_inputs(), self._apply_state, self.settings()
+        )
         self._last_debug = plan.as_dict()
         if plan.execute:
             self.hass.async_create_task(self._execute(plan))

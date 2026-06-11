@@ -70,6 +70,18 @@ class RampSettings:
 
 
 @dataclass
+class ApplyState:
+    """Persistenter Zustand zwischen Coordinator-Ticks (RAM). Trägt den
+    R20-Pre-Quiet-Snapshot + die Quiet-Edge-Buchführung."""
+
+    was_quiet: bool = False
+    pre_quiet_homepods: Optional[float] = None   # Pre-Quiet-Target (Snapshot, R20)
+    pre_quiet_denon: Optional[float] = None
+    last_homepods_target: Optional[float] = None  # Vortick-Target (Quelle des Snapshots)
+    last_denon_target: Optional[float] = None
+
+
+@dataclass
 class ApplyPlan:
     """Was der Coordinator tun soll. Im Shadow (execute=False) nur Debug."""
 
@@ -80,6 +92,7 @@ class ApplyPlan:
     denon_set: Optional[float] = None      # harter Set-Wert (None = no-op)
     subwoofer_set: Optional[bool] = None   # True/False/None (None = no-op)
     quiet_override: bool = False           # Quiet → direkt, laufenden Ramp abbrechen
+    is_restore: bool = False               # R20: Quiet-Ende → Ramp-Up auf Pre-Quiet
     reasons: list = field(default_factory=list)
 
     def as_dict(self) -> dict[str, Any]:
@@ -91,6 +104,7 @@ class ApplyPlan:
             "denon_target": self.denon_set,
             "subwoofer_set": self.subwoofer_set,
             "quiet_override": self.quiet_override,
+            "is_restore": self.is_restore,
             "reasons": list(self.reasons),
         }
 
@@ -147,13 +161,37 @@ def _direct(current: Optional[float], target: Optional[float]) -> list[float]:
 # --------------------------------------------------------------------------- #
 # Master-Entscheidung
 # --------------------------------------------------------------------------- #
-def decide_apply(inp: Inputs, settings: Optional[RampSettings] = None) -> ApplyPlan:
-    """Berechnet den Apply-Plan. Seiteneffekt-frei; der Coordinator führt aus."""
+def decide_apply(
+    inp: Inputs,
+    state: Optional[ApplyState] = None,
+    settings: Optional[RampSettings] = None,
+) -> tuple[ApplyPlan, ApplyState]:
+    """Berechnet (Apply-Plan, nächster Zustand). Seiteneffekt-frei; der
+    Coordinator führt aus + hält den ApplyState über die Ticks."""
     if settings is None:
         settings = RampSettings()
+    if state is None:
+        state = ApplyState()
     p = ApplyPlan()
     p.execute = inp.apply_enabled
     reasons: list[str] = []
+
+    # ----- Quiet-Edges + Pre-Quiet-Snapshot (R20) -----
+    quiet_entry = inp.quiet_mode and not state.was_quiet
+    quiet_exit = (not inp.quiet_mode) and state.was_quiet
+    new_state = ApplyState(
+        was_quiet=inp.quiet_mode,
+        pre_quiet_homepods=state.pre_quiet_homepods,
+        pre_quiet_denon=state.pre_quiet_denon,
+        # Vortick-Target nur außerhalb von Quiet fortschreiben — während Quiet
+        # bleibt der Pre-Quiet-Wert eingefroren (sonst ginge er auf 0.10 verloren).
+        last_homepods_target=inp.homepods_target if not inp.quiet_mode else state.last_homepods_target,
+        last_denon_target=inp.denon_target if not inp.quiet_mode else state.last_denon_target,
+    )
+    if quiet_entry:
+        # Snapshot des Pre-Quiet-Targets (der Vortick-Wert, vor dem Ducking).
+        new_state.pre_quiet_homepods = state.last_homepods_target
+        new_state.pre_quiet_denon = state.last_denon_target
 
     # ----- HomePods-Action (geräte-zustands-idempotent) -----
     hp_playing = inp.homepods_state in PLAYER_PLAYING_VALUES
@@ -178,35 +216,63 @@ def decide_apply(inp: Inputs, settings: Optional[RampSettings] = None) -> ApplyP
     # ----- Volume (nur wenn die Policy es erlaubt) -----
     if inp.volume_apply_allowed:
         p.quiet_override = inp.quiet_mode
-        if (
-            inp.homepods_configured
-            and inp.homepods_target is not None
-            and inp.homepods_state in PLAYER_ADDRESSABLE_VALUES
-        ):
-            if inp.quiet_mode:
-                # R20: Quiet → hart/direkt (kein Ramp), laufenden Ramp abbrechen.
-                p.homepods_levels = _direct(inp.homepods_volume, inp.homepods_target)
-                p.homepods_ramp = False
-            else:
+        if quiet_exit and new_state.pre_quiet_homepods is not None:
+            # R20: Quiet-Ende → Restore auf Pre-Quiet (HomePods rampen, Denon hart).
+            if inp.homepods_configured and inp.homepods_state in PLAYER_ADDRESSABLE_VALUES:
                 p.homepods_levels = ramp_levels(
-                    inp.homepods_volume, inp.homepods_target,
+                    inp.homepods_volume, new_state.pre_quiet_homepods,
                     settings.ramp_steps, settings.tiny_delta,
                 )
                 p.homepods_ramp = len(p.homepods_levels) > 1
-            if p.homepods_levels:
-                reasons.append("volume:homepods_ramp" if p.homepods_ramp else "volume:homepods_direct")
-        # Denon: immer hart (kein Ramp), idempotent.
-        if (
-            inp.denon_configured
-            and inp.denon_target is not None
-            and inp.denon_state in PLAYER_ADDRESSABLE_VALUES
-        ):
-            denon = _direct(inp.denon_volume, inp.denon_target)
-            p.denon_set = denon[0] if denon else None
-            if p.denon_set is not None:
-                reasons.append("volume:denon_set")
+                if p.homepods_levels:
+                    p.is_restore = True
+                    reasons.append("restore:r20_quiet_end")
+            if (
+                inp.denon_configured
+                and new_state.pre_quiet_denon is not None
+                and inp.denon_state in PLAYER_ADDRESSABLE_VALUES
+            ):
+                d = _direct(inp.denon_volume, new_state.pre_quiet_denon)
+                p.denon_set = d[0] if d else None
+                if p.denon_set is not None:
+                    p.is_restore = True
+                    reasons.append("restore:denon_hard")
+        else:
+            # ---- Phase-1-Normalfall ----
+            if (
+                inp.homepods_configured
+                and inp.homepods_target is not None
+                and inp.homepods_state in PLAYER_ADDRESSABLE_VALUES
+            ):
+                if inp.quiet_mode:
+                    # R20: Quiet → hart/direkt (kein Ramp), laufenden Ramp abbrechen.
+                    p.homepods_levels = _direct(inp.homepods_volume, inp.homepods_target)
+                    p.homepods_ramp = False
+                else:
+                    p.homepods_levels = ramp_levels(
+                        inp.homepods_volume, inp.homepods_target,
+                        settings.ramp_steps, settings.tiny_delta,
+                    )
+                    p.homepods_ramp = len(p.homepods_levels) > 1
+                if p.homepods_levels:
+                    reasons.append("volume:homepods_ramp" if p.homepods_ramp else "volume:homepods_direct")
+            # Denon: immer hart (kein Ramp), idempotent.
+            if (
+                inp.denon_configured
+                and inp.denon_target is not None
+                and inp.denon_state in PLAYER_ADDRESSABLE_VALUES
+            ):
+                denon = _direct(inp.denon_volume, inp.denon_target)
+                p.denon_set = denon[0] if denon else None
+                if p.denon_set is not None:
+                    reasons.append("volume:denon_set")
     else:
         reasons.append("volume:not_allowed")
+
+    # Snapshot nach dem Restore wieder freigeben.
+    if quiet_exit:
+        new_state.pre_quiet_homepods = None
+        new_state.pre_quiet_denon = None
 
     # ----- Subwoofer (idempotent on/off) -----
     if inp.subwoofer_configured and inp.subwoofer_state in ("on", "off"):
@@ -218,4 +284,4 @@ def decide_apply(inp: Inputs, settings: Optional[RampSettings] = None) -> ApplyP
     if not p.execute:
         reasons.append("shadow:apply_disabled")
     p.reasons = reasons
-    return p
+    return p, new_state

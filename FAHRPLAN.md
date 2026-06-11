@@ -43,8 +43,10 @@ Analyse-Stand 2026-06-11 (alter Layer: `einhornzentrale/packages/media/`):
   delegiert), Subwoofer on/off. Quiet → direkt (kein Ramp). **Shadow-safe**
   (`apply_enabled` default OFF): Plan wird als Debug-Sensor exponiert, NICHT
   ausgeführt, bis freigegeben.
-- **Phase 2 — Restore (R20):** Pre-Quiet-Snapshot + Ramp-Up bei Quiet-Ende;
-  laufenden Ramp bei Quiet-Eintritt abbrechen → sofort 0.10.
+- **Phase 2 — Restore (R20) ✅ (0.2.0):** Pre-Quiet-Snapshot (ApplyState) +
+  Ramp-Up auf Pre-Quiet bei Quiet-Ende (HomePods rampen, Denon hart); Quiet-
+  Eintritt bricht den laufenden Ramp ab → sofort 0.10 (Phase-1-quiet_override +
+  Coordinator-Ramp-Cancel). 29 pure-logic-Tests grün.
 - **Phase 3 — Timer-Regeln:** Denon-Nachlauf R13/R14 (90s, abbrechbar,
   Sleep pausiert TV-Timer); Sleep-TV-Off R24/R25 (45min-Warnung + Verlängern).
 - **Phase 4 — Radio-Katalog-Port + TV-WoL + FIFO-Queue (R1/R3) + OQ-2.**
