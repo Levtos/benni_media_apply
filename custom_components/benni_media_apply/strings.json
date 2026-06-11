@@ -1,0 +1,84 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Profil wählen",
+        "description": "Profil-Hub: für wen gilt diese Apply-Instanz? (Benni / Eltern). Der Device-Name folgt dem Profil → sensor.benni_media_apply_* bzw. sensor.eltern_media_apply_*.",
+        "data": { "profile": "Profil" }
+      },
+      "entities": {
+        "title": "Quellen & Geräte",
+        "description": "Eingänge aus benni_media_policy (Action/Targets/Gates) + benni_media_state (Quiet) + Stop-Latch + die echten Audio-Geräte (Apply-Targets). Vorbefüllt aus der Profil-Map; gespeichert werden nur Abweichungen.",
+        "data": {
+          "audio_owner_entity": "media_policy · Audio Owner",
+          "action_entity": "media_policy · Action (pause/resume/radio)",
+          "volume_policy_entity": "media_policy · Volume Policy",
+          "volume_target_homepods_entity": "media_policy · Volume Target HomePods",
+          "volume_target_denon_entity": "media_policy · Volume Target Denon",
+          "homepods_should_pause_entity": "media_policy · HomePods Should Pause",
+          "homepods_resume_allowed_entity": "media_policy · HomePods Resume Allowed",
+          "subwoofer_allowed_entity": "media_policy · Subwoofer Allowed",
+          "volume_apply_allowed_entity": "media_policy · Volume Apply Allowed",
+          "quiet_mode_entity": "media_state · Quiet Mode",
+          "stop_latch_entity": "Media-Stop-Latch (input_boolean, shared)",
+          "homepods_player_entity": "HomePods · Media-Player (MA-Gruppe)",
+          "denon_player_entity": "Denon · Media-Player",
+          "subwoofer_switch_entity": "Subwoofer · Plug (switch)"
+        }
+      },
+      "options": {
+        "title": "Apply-Gate & Ramp-Settings",
+        "description": "Apply ist standardmäßig AUS (Shadow): der Plan wird berechnet + als Sensoren gezeigt, aber NICHT ausgeführt. Erst einschalten, wenn der Shadow stimmt. Ramp-Werte 0..1.",
+        "data": {
+          "apply_enabled": "Apply aktiviert (aus = Shadow, schaltet keine Geräte)",
+          "ramp_steps": "HomePods Ramp-Schritte",
+          "ramp_step_delay_seconds": "Ramp-Schrittdelay (s)",
+          "tiny_delta": "Tiny-Delta (≤ → direkt setzen, kein Ramp)",
+          "ducked_level": "Ducked-Level (Quiet)",
+          "radio_start_script": "Radio-Start-Script (start_radio-Delegation)"
+        }
+      }
+    },
+    "abort": {
+      "single_instance_allowed": "Es ist bereits eine Media-Apply-Instanz konfiguriert."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Media Apply — Optionen",
+        "menu_options": { "entities": "Quellen & Geräte", "options": "Apply-Gate & Ramp" }
+      },
+      "entities": {
+        "title": "Quellen & Geräte",
+        "data": {
+          "audio_owner_entity": "media_policy · Audio Owner",
+          "action_entity": "media_policy · Action (pause/resume/radio)",
+          "volume_policy_entity": "media_policy · Volume Policy",
+          "volume_target_homepods_entity": "media_policy · Volume Target HomePods",
+          "volume_target_denon_entity": "media_policy · Volume Target Denon",
+          "homepods_should_pause_entity": "media_policy · HomePods Should Pause",
+          "homepods_resume_allowed_entity": "media_policy · HomePods Resume Allowed",
+          "subwoofer_allowed_entity": "media_policy · Subwoofer Allowed",
+          "volume_apply_allowed_entity": "media_policy · Volume Apply Allowed",
+          "quiet_mode_entity": "media_state · Quiet Mode",
+          "stop_latch_entity": "Media-Stop-Latch (input_boolean, shared)",
+          "homepods_player_entity": "HomePods · Media-Player (MA-Gruppe)",
+          "denon_player_entity": "Denon · Media-Player",
+          "subwoofer_switch_entity": "Subwoofer · Plug (switch)"
+        }
+      },
+      "options": {
+        "title": "Apply-Gate & Ramp-Settings",
+        "data": {
+          "apply_enabled": "Apply aktiviert (aus = Shadow, schaltet keine Geräte)",
+          "ramp_steps": "HomePods Ramp-Schritte",
+          "ramp_step_delay_seconds": "Ramp-Schrittdelay (s)",
+          "tiny_delta": "Tiny-Delta (≤ → direkt setzen, kein Ramp)",
+          "ducked_level": "Ducked-Level (Quiet)",
+          "radio_start_script": "Radio-Start-Script (start_radio-Delegation)"
+        }
+      }
+    }
+  }
+}
