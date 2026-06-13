@@ -22,6 +22,7 @@ from .const import (
     UID_EXECUTE,
     UID_HOMEPODS_TARGET,
     UID_LAST_ACTION,
+    UID_NACHLAUF_ACTIVE,
     UID_RAMP_ACTIVE,
     unique_id,
 )
@@ -47,6 +48,7 @@ BINARY_SENSORS: tuple[FieldDesc, ...] = (
     FieldDesc("ramp_active", UID_RAMP_ACTIVE, "Ramp Active", "mdi:transfer"),
     FieldDesc("apply_enabled", UID_APPLY_ENABLED, "Apply Enabled (Live)", "mdi:lock-open-check"),
     FieldDesc("execute", UID_EXECUTE, "Execute", "mdi:flash"),
+    FieldDesc("denon_nachlauf_active", UID_NACHLAUF_ACTIVE, "Denon Nachlauf Active", "mdi:timer-sand"),
 )
 
 

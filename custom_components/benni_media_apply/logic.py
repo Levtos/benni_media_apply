@@ -15,7 +15,7 @@ Restore (R20), Denon-Nachlauf (R13/R14), Sleep-Off (R24/R25) folgen.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Optional
+from typing import Any, Final, Optional
 
 from .const import (
     ACTION_NONE,
@@ -59,6 +59,11 @@ class Inputs:
     denon_volume: Optional[float] = None
     subwoofer_configured: bool = False
     subwoofer_state: Optional[str] = None   # "on"/"off"/None
+    # Phase 3 (R13/R14 Denon-Nachlauf). None = unbekannt/nicht gebunden ⇒ kein Arm.
+    pc_power_on: Optional[bool] = None
+    tv_power_on: Optional[bool] = None
+    denon_power_on: Optional[bool] = None
+    bio_sleep: Optional[bool] = None
 
 
 @dataclass(frozen=True)
@@ -285,3 +290,102 @@ def decide_apply(
         reasons.append("shadow:apply_disabled")
     p.reasons = reasons
     return p, new_state
+
+
+# --------------------------------------------------------------------------- #
+# Phase 3 — Denon-Nachlauf (R13/R14)
+# --------------------------------------------------------------------------- #
+# Timer-Intents: der Coordinator besitzt den realen asyncio-Countdown, die
+# Pure-Logic entscheidet nur die Flanke (arm/cancel/pause) und führt das
+# Armed-Buchwerk über die Ticks. Expiry-Aktion ist fix: Denon ausschalten.
+TIMER_NONE: Final = "none"
+TIMER_ARM: Final = "arm"
+TIMER_CANCEL: Final = "cancel"
+TIMER_PAUSE: Final = "pause"
+
+
+@dataclass
+class NachlaufState:
+    """Armed-Buchwerk der Nachlauf-Timer zwischen Coordinator-Ticks (RAM)."""
+
+    pc_armed: bool = False
+    tv_armed: bool = False
+    tv_paused: bool = False   # R14: während Sleep pausiert (nicht abgebrochen)
+
+
+@dataclass
+class NachlaufPlan:
+    """Flanken-Intent pro Timer. NONE = unverändert lassen."""
+
+    pc: str = TIMER_NONE
+    tv: str = TIMER_NONE
+    reasons: list = field(default_factory=list)
+
+    @property
+    def active(self) -> bool:
+        return self.pc != TIMER_NONE or self.tv != TIMER_NONE
+
+    def as_dict(self) -> dict[str, Any]:
+        return {"pc": self.pc, "tv": self.tv, "reasons": list(self.reasons)}
+
+
+def decide_denon_nachlauf(
+    inp: Inputs, state: Optional[NachlaufState] = None
+) -> tuple[NachlaufPlan, NachlaufState]:
+    """R13/R14: Denon-Nachlauf nach PC-/TV-Aus.
+
+    R13 (PC): PC aus + Denon noch an → 90s-Timer. PC zurück (oder Denon schon
+              aus / Daten unbekannt) → abbrechen. Expiry → Denon aus.
+    R14 (TV): wie R13, aber **Sleep pausiert** den Timer (nicht abbrechen):
+              während bio_sleep wird ein laufender Timer ausgesetzt und nach
+              Sleep-Ende — falls TV weiter aus & Denon an — neu gestartet.
+
+    Arm-Bedingung verlangt EXPLIZIT power_on==False & denon_power_on==True;
+    None (unbekannt/ungebunden) armt nie und bricht einen laufenden Timer ab
+    (kein Off-Schalten auf Basis fehlender Daten)."""
+    if state is None:
+        state = NachlaufState()
+    p = NachlaufPlan()
+    ns = NachlaufState(
+        pc_armed=state.pc_armed, tv_armed=state.tv_armed, tv_paused=state.tv_paused
+    )
+    reasons: list[str] = []
+    denon_on = inp.denon_power_on is True
+
+    # ----- R13: PC-Aus -----
+    pc_cond = inp.pc_power_on is False and denon_on
+    if pc_cond and not ns.pc_armed:
+        p.pc = TIMER_ARM
+        ns.pc_armed = True
+        reasons.append("r13:arm_pc")
+    elif not pc_cond and ns.pc_armed:
+        p.pc = TIMER_CANCEL
+        ns.pc_armed = False
+        reasons.append("r13:cancel_pc")
+
+    # ----- R14: TV-Aus (Sleep pausiert) -----
+    tv_cond = inp.tv_power_on is False and denon_on
+    if inp.bio_sleep is True:
+        if ns.tv_armed and not ns.tv_paused:
+            p.tv = TIMER_PAUSE
+            ns.tv_paused = True
+            reasons.append("r14:pause_sleep")
+    else:
+        if tv_cond and not ns.tv_armed:
+            p.tv = TIMER_ARM
+            ns.tv_armed = True
+            ns.tv_paused = False
+            reasons.append("r14:arm_tv")
+        elif tv_cond and ns.tv_armed and ns.tv_paused:
+            # Sleep-Ende, Bedingung hält → neu starten (90s; kein Rest-Resume).
+            p.tv = TIMER_ARM
+            ns.tv_paused = False
+            reasons.append("r14:resume_tv")
+        elif not tv_cond and ns.tv_armed:
+            p.tv = TIMER_CANCEL
+            ns.tv_armed = False
+            ns.tv_paused = False
+            reasons.append("r14:cancel_tv")
+
+    p.reasons = reasons
+    return p, ns

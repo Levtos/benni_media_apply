@@ -221,3 +221,136 @@ def test_r20_no_snapshot_falls_back_to_phase1():
     )
     assert p.is_restore is False
     assert p.homepods_levels[-1] == 0.45         # Phase 1 rampt trotzdem hoch
+
+
+# ================================================================= #
+# Phase 3 — Denon-Nachlauf (R13/R14)
+# ================================================================= #
+def _ninp(**kw):
+    """Inputs nur mit den Nachlauf-relevanten Feldern (Rest neutral)."""
+    base = dict(pc_power_on=None, tv_power_on=None, denon_power_on=None, bio_sleep=None)
+    base.update(kw)
+    return L.Inputs(**base)
+
+
+# ---------------------------------------------------------------- R13 (PC)
+def test_r13_arm_when_pc_off_and_denon_on():
+    p, s = L.decide_denon_nachlauf(_ninp(pc_power_on=False, denon_power_on=True))
+    assert p.pc == L.TIMER_ARM
+    assert s.pc_armed is True
+    assert "r13:arm_pc" in p.reasons
+
+
+def test_r13_no_arm_when_pc_on():
+    p, s = L.decide_denon_nachlauf(_ninp(pc_power_on=True, denon_power_on=True))
+    assert p.pc == L.TIMER_NONE
+    assert s.pc_armed is False
+
+
+def test_r13_no_arm_when_denon_off():
+    p, s = L.decide_denon_nachlauf(_ninp(pc_power_on=False, denon_power_on=False))
+    assert p.pc == L.TIMER_NONE
+    assert s.pc_armed is False
+
+
+def test_r13_no_arm_on_unknown_inputs():
+    # PC/Denon ungebunden (None) → niemals armen.
+    p, s = L.decide_denon_nachlauf(_ninp(pc_power_on=None, denon_power_on=None))
+    assert p.pc == L.TIMER_NONE
+    assert s.pc_armed is False
+
+
+def test_r13_idempotent_while_armed():
+    st = L.NachlaufState(pc_armed=True)
+    p, s = L.decide_denon_nachlauf(_ninp(pc_power_on=False, denon_power_on=True), st)
+    assert p.pc == L.TIMER_NONE          # kein Re-Arm
+    assert s.pc_armed is True
+
+
+def test_r13_cancel_when_pc_returns():
+    st = L.NachlaufState(pc_armed=True)
+    p, s = L.decide_denon_nachlauf(_ninp(pc_power_on=True, denon_power_on=True), st)
+    assert p.pc == L.TIMER_CANCEL
+    assert s.pc_armed is False
+
+
+def test_r13_cancel_when_denon_goes_off():
+    st = L.NachlaufState(pc_armed=True)
+    p, s = L.decide_denon_nachlauf(_ninp(pc_power_on=False, denon_power_on=False), st)
+    assert p.pc == L.TIMER_CANCEL
+    assert s.pc_armed is False
+
+
+def test_r13_cancel_when_inputs_go_unknown():
+    st = L.NachlaufState(pc_armed=True)
+    p, s = L.decide_denon_nachlauf(_ninp(pc_power_on=None, denon_power_on=None), st)
+    assert p.pc == L.TIMER_CANCEL        # kein Off auf Basis fehlender Daten
+    assert s.pc_armed is False
+
+
+# ---------------------------------------------------------------- R14 (TV)
+def test_r14_arm_when_tv_off_and_denon_on():
+    p, s = L.decide_denon_nachlauf(_ninp(tv_power_on=False, denon_power_on=True))
+    assert p.tv == L.TIMER_ARM
+    assert s.tv_armed is True
+
+
+def test_r14_cancel_when_tv_returns():
+    st = L.NachlaufState(tv_armed=True)
+    p, s = L.decide_denon_nachlauf(_ninp(tv_power_on=True, denon_power_on=True), st)
+    assert p.tv == L.TIMER_CANCEL
+    assert s.tv_armed is False
+
+
+def test_r14_sleep_pauses_armed_timer():
+    st = L.NachlaufState(tv_armed=True)
+    p, s = L.decide_denon_nachlauf(
+        _ninp(tv_power_on=False, denon_power_on=True, bio_sleep=True), st
+    )
+    assert p.tv == L.TIMER_PAUSE
+    assert s.tv_armed is True             # bleibt armed (nur ausgesetzt)
+    assert s.tv_paused is True
+
+
+def test_r14_no_arm_during_sleep():
+    p, s = L.decide_denon_nachlauf(
+        _ninp(tv_power_on=False, denon_power_on=True, bio_sleep=True)
+    )
+    assert p.tv == L.TIMER_NONE
+    assert s.tv_armed is False
+
+
+def test_r14_resume_restart_after_sleep_ends():
+    st = L.NachlaufState(tv_armed=True, tv_paused=True)
+    p, s = L.decide_denon_nachlauf(
+        _ninp(tv_power_on=False, denon_power_on=True, bio_sleep=False), st
+    )
+    assert p.tv == L.TIMER_ARM            # Neustart
+    assert s.tv_paused is False
+    assert "r14:resume_tv" in p.reasons
+
+
+def test_r14_paused_then_tv_returns_cancels_after_sleep():
+    st = L.NachlaufState(tv_armed=True, tv_paused=True)
+    p, s = L.decide_denon_nachlauf(
+        _ninp(tv_power_on=True, denon_power_on=True, bio_sleep=False), st
+    )
+    assert p.tv == L.TIMER_CANCEL
+    assert s.tv_armed is False
+    assert s.tv_paused is False
+
+
+# ---------------------------------------------------------------- shared
+def test_pc_and_tv_independent():
+    p, s = L.decide_denon_nachlauf(
+        _ninp(pc_power_on=False, tv_power_on=False, denon_power_on=True)
+    )
+    assert p.pc == L.TIMER_ARM
+    assert p.tv == L.TIMER_ARM
+    assert p.active is True
+
+
+def test_plan_inactive_when_no_change():
+    p, _ = L.decide_denon_nachlauf(_ninp(pc_power_on=True, denon_power_on=True))
+    assert p.active is False
+    assert p.as_dict() == {"pc": L.TIMER_NONE, "tv": L.TIMER_NONE, "reasons": []}

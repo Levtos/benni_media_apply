@@ -49,6 +49,12 @@ ACTION_START_RADIO: Final = "start_radio"
 PLAYER_PLAYING_VALUES: Final = ("playing",)
 # Zustände, in denen ein Volume-Set sinnvoll ist (nicht unknown/unavailable/off).
 PLAYER_ADDRESSABLE_VALUES: Final = ("playing", "idle", "paused", "on", "buffering")
+# media_player/AVR-Zustände, die als "ausgeschaltet" gelten (Denon-Power-Ableitung,
+# falls kein dediziertes Power-Atomic gebunden ist).
+PLAYER_OFF_VALUES: Final = ("off", "standby")
+
+# Bio-State (core_state), bei dem R14 pausiert (Sleep dominant).
+BIO_SLEEP_VALUE: Final = "sleep"
 
 # --------------------------------------------------------------------------- #
 # Config-Keys — Eingänge (via Entity-State).
@@ -72,6 +78,19 @@ CONF_HOMEPODS_PLAYER: Final[str] = "homepods_player_entity"
 CONF_DENON_PLAYER: Final[str] = "denon_player_entity"
 CONF_SUBWOOFER_SWITCH: Final[str] = "subwoofer_switch_entity"
 
+# --------------------------------------------------------------------------- #
+# Phase 3 (R13/R14 Denon-Nachlauf) — Geräte-Power-Inputs.
+# PC-/TV-Power sind core_devices-Atomics, die FLEET-54 gerade migriert → Bindings
+# bleiben hier DEFERRED (PROFILE_PREFILL leer), bis die Atomic-Slugs feststehen.
+# Bis dahin liefern sie None ⇒ die Nachlauf-Timer armen nie (no-op, doppelt safe
+# zusätzlich zum Shadow-Gate). Denon-Power leitet sich notfalls aus dem bereits
+# gebundenen CONF_DENON_PLAYER ab; bio_state kommt aus core_state (stabil).
+# --------------------------------------------------------------------------- #
+CONF_PC_POWER: Final[str] = "pc_power_entity"
+CONF_TV_POWER: Final[str] = "tv_power_entity"
+CONF_DENON_POWER: Final[str] = "denon_power_entity"
+CONF_BIO_STATE: Final[str] = "bio_state_entity"
+
 # Keys, deren gebundene Entities der Coordinator beobachtet (event-driven).
 WATCH_KEYS: Final[tuple[str, ...]] = (
     CONF_AUDIO_OWNER, CONF_ACTION, CONF_VOLUME_POLICY,
@@ -80,6 +99,7 @@ WATCH_KEYS: Final[tuple[str, ...]] = (
     CONF_SUBWOOFER_ALLOWED, CONF_VOLUME_APPLY_ALLOWED,
     CONF_QUIET_MODE, CONF_STOP_LATCH,
     CONF_HOMEPODS_PLAYER, CONF_DENON_PLAYER, CONF_SUBWOOFER_SWITCH,
+    CONF_PC_POWER, CONF_TV_POWER, CONF_DENON_POWER, CONF_BIO_STATE,
 )
 ENTITY_SLOT_KEYS: Final[tuple[str, ...]] = WATCH_KEYS
 
@@ -103,6 +123,14 @@ PROFILE_PREFILL: Final[dict[str, dict[str, Any]]] = {
         CONF_HOMEPODS_PLAYER: "media_player.living_homepods_ma_group",
         CONF_DENON_PLAYER: "media_player.living_denon",
         CONF_SUBWOOFER_SWITCH: "switch.living_subwoofer_plug",
+        # Phase 3 — DEFERRED bis FLEET-54 die Atomic-Slugs festklopft (leer = no-op).
+        # Kandidaten (zur Bindung nach #54): PC-Power-Atomic, TV-Power-Atomic
+        # (WebOS/Wattage, R11), denon_power → binary_sensor.living_denon_plug_power_active_atomic,
+        # bio_state → sensor.<...>_core_state_bio_state.
+        CONF_PC_POWER: "",
+        CONF_TV_POWER: "",
+        CONF_DENON_POWER: "",
+        CONF_BIO_STATE: "",
     },
     PROFILE_ELTERN: {},
 }
@@ -126,6 +154,12 @@ DEFAULT_TINY_DELTA: Final[float] = 0.02
 DEFAULT_DUCKED_LEVEL: Final[float] = 0.10
 DEFAULT_RADIO_START_SCRIPT: Final[str] = "script.media_radio_start"
 
+# Phase 3 — Denon-Nachlauf (R13/R14), Sekunden (Lastenheft 20_helpers: 90s).
+CONF_DENON_NACHLAUF_PC: Final[str] = "denon_nachlauf_pc_seconds"
+CONF_DENON_NACHLAUF_TV: Final[str] = "denon_nachlauf_tv_seconds"
+DEFAULT_DENON_NACHLAUF_PC: Final[float] = 90.0
+DEFAULT_DENON_NACHLAUF_TV: Final[float] = 90.0
+
 RAMP_SETTING_DEFAULTS: Final[dict[str, Any]] = {
     CONF_RAMP_STEPS: DEFAULT_RAMP_STEPS,
     CONF_RAMP_STEP_DELAY: DEFAULT_RAMP_STEP_DELAY,
@@ -143,6 +177,7 @@ UID_DENON_TARGET: Final[str] = "denon_target"
 UID_RAMP_ACTIVE: Final[str] = "ramp_active"
 UID_APPLY_ENABLED: Final[str] = "apply_enabled"
 UID_EXECUTE: Final[str] = "execute"
+UID_NACHLAUF_ACTIVE: Final[str] = "denon_nachlauf_active"
 
 DEFAULT_DATA: Final[dict[str, Any]] = {
     "last_action": ACTION_NONE,
@@ -151,4 +186,5 @@ DEFAULT_DATA: Final[dict[str, Any]] = {
     "ramp_active": False,
     "apply_enabled": DEFAULT_APPLY_ENABLED,
     "execute": False,
+    "denon_nachlauf_active": False,
 }
