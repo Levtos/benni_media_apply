@@ -26,14 +26,20 @@ from .const import (
     ACTION_PAUSE,
     ACTION_RESUME,
     ACTION_START_RADIO,
+    BIO_SLEEP_VALUE,
     CONF_ACTION,
     CONF_APPLY_ENABLED,
     CONF_AUDIO_OWNER,
+    CONF_BIO_STATE,
+    CONF_DENON_NACHLAUF_PC,
+    CONF_DENON_NACHLAUF_TV,
     CONF_DENON_PLAYER,
+    CONF_DENON_POWER,
     CONF_DUCKED_LEVEL,
     CONF_HOMEPODS_PLAYER,
     CONF_HOMEPODS_RESUME_ALLOWED,
     CONF_HOMEPODS_SHOULD_PAUSE,
+    CONF_PC_POWER,
     CONF_PROFILE,
     CONF_QUIET_MODE,
     CONF_RADIO_START_SCRIPT,
@@ -43,11 +49,14 @@ from .const import (
     CONF_SUBWOOFER_ALLOWED,
     CONF_SUBWOOFER_SWITCH,
     CONF_TINY_DELTA,
+    CONF_TV_POWER,
     CONF_VOL_TARGET_DENON,
     CONF_VOL_TARGET_HOMEPODS,
     CONF_VOLUME_APPLY_ALLOWED,
     CONF_VOLUME_POLICY,
     DEFAULT_APPLY_ENABLED,
+    DEFAULT_DENON_NACHLAUF_PC,
+    DEFAULT_DENON_NACHLAUF_TV,
     DEFAULT_DUCKED_LEVEL,
     DEFAULT_PROFILE,
     DEFAULT_RADIO_START_SCRIPT,
@@ -55,6 +64,7 @@ from .const import (
     DEFAULT_RAMP_STEPS,
     DEFAULT_TINY_DELTA,
     DOMAIN,
+    PLAYER_OFF_VALUES,
     PROFILE_PREFILL,
     PROFILES,
     WATCH_KEYS,
@@ -81,6 +91,8 @@ class MediaApplyCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self._ramp_task = None
         self._ramp_active = False
         self._apply_state = logic.ApplyState()
+        self._nachlauf_state = logic.NachlaufState()
+        self._nachlauf_tasks: dict[str, asyncio.Task] = {}
         self._last_debug: dict[str, Any] = {}
 
     # ----- profile / binding -----
@@ -151,8 +163,10 @@ class MediaApplyCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
     @callback
     def async_shutdown_ramp(self) -> None:
-        """Unload-Hook: laufenden Ramp-Task sauber abbrechen."""
+        """Unload-Hook: laufende Ramp- und Nachlauf-Tasks sauber abbrechen."""
         self._cancel_ramp()
+        for key in list(self._nachlauf_tasks):
+            self._cancel_nachlauf(key)
 
     # ----- reads -----
     def _state(self, key: str) -> str | None:
@@ -183,6 +197,36 @@ class MediaApplyCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         except (TypeError, ValueError):
             return None
 
+    def _tri_bool(self, key: str) -> Optional[bool]:
+        """Tri-state: None wenn ungebunden ODER Zustand unbekannt/unavailable,
+        sonst bool. Verhindert, dass Nachlauf-Timer auf fehlenden Daten armen."""
+        if not self._entity_id(key):
+            return None
+        raw = self._state(key)   # None bei unknown/unavailable
+        if raw is None:
+            return None
+        return _bool(raw)
+
+    def _denon_power_on(self) -> Optional[bool]:
+        """Denon-Power: dediziertes Atomic bevorzugt (CONF_DENON_POWER, sobald
+        nach #54 gebunden), sonst Ableitung aus dem bereits gebundenen
+        Denon-media_player (state nicht in off/standby)."""
+        if self._entity_id(CONF_DENON_POWER):
+            return self._tri_bool(CONF_DENON_POWER)
+        st = self._state(CONF_DENON_PLAYER)
+        if st is None:
+            return None
+        return st not in PLAYER_OFF_VALUES
+
+    def _bio_sleep(self) -> Optional[bool]:
+        """bio_state == 'sleep' (core_state). None wenn ungebunden/unbekannt."""
+        if not self._entity_id(CONF_BIO_STATE):
+            return None
+        st = self._state(CONF_BIO_STATE)
+        if st is None:
+            return None
+        return st == BIO_SLEEP_VALUE
+
     # ----- evaluation -----
     def _build_inputs(self) -> logic.Inputs:
         return logic.Inputs(
@@ -204,15 +248,28 @@ class MediaApplyCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             denon_volume=self._attr_float(CONF_DENON_PLAYER, "volume_level"),
             subwoofer_configured=bool(self._entity_id(CONF_SUBWOOFER_SWITCH)),
             subwoofer_state=self._state(CONF_SUBWOOFER_SWITCH),
+            # Phase 3 (R13/R14): None solange PC/TV-Power-Atomics ungebunden (#54).
+            pc_power_on=self._tri_bool(CONF_PC_POWER),
+            tv_power_on=self._tri_bool(CONF_TV_POWER),
+            denon_power_on=self._denon_power_on(),
+            bio_sleep=self._bio_sleep(),
         )
 
     def _compute(self) -> dict[str, Any]:
+        inputs = self._build_inputs()
         plan, self._apply_state = logic.decide_apply(
-            self._build_inputs(), self._apply_state, self.settings()
+            inputs, self._apply_state, self.settings()
         )
-        self._last_debug = plan.as_dict()
+        nplan, self._nachlauf_state = logic.decide_denon_nachlauf(
+            inputs, self._nachlauf_state
+        )
+        self._last_debug = {**plan.as_dict(), "nachlauf": nplan.as_dict()}
         if plan.execute:
             self.hass.async_create_task(self._execute(plan))
+        # Nachlauf-Flanken IMMER verarbeiten (Arm/Cancel-Buchwerk auch im Shadow,
+        # für Observability); der reale Denon-Off ist in _run_nachlauf gegatet.
+        if nplan.active:
+            self._apply_nachlauf(nplan)
         return {
             "last_action": plan.homepods_action,
             "homepods_target": plan.homepods_levels[-1] if plan.homepods_levels else None,
@@ -220,13 +277,26 @@ class MediaApplyCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             "ramp_active": self._ramp_active,
             "apply_enabled": self.apply_enabled,
             "execute": plan.execute,
+            "denon_nachlauf_active": (
+                self._nachlauf_state.pc_armed or self._nachlauf_state.tv_armed
+            ),
         }
 
     async def _async_update_data(self) -> dict[str, Any]:
         return self._compute()
 
     def debug(self) -> dict[str, Any]:
-        return {**self._last_debug, "ramp_active": self._ramp_active, "bindings": self.bindings()}
+        return {
+            **self._last_debug,
+            "ramp_active": self._ramp_active,
+            "nachlauf": {
+                "pc_armed": self._nachlauf_state.pc_armed,
+                "tv_armed": self._nachlauf_state.tv_armed,
+                "tv_paused": self._nachlauf_state.tv_paused,
+                "tasks": sorted(self._nachlauf_tasks),
+            },
+            "bindings": self.bindings(),
+        }
 
     # ----- execution (side effects) -----
     async def _svc(self, domain: str, service: str, data: dict[str, Any]) -> None:
@@ -308,6 +378,75 @@ class MediaApplyCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             _LOGGER.warning("media_apply: ramp on %s failed: %s", entity_id, err)
         finally:
             self._set_ramp_active(False)
+
+    # ----- Denon-Nachlauf (R13/R14) -----
+    def _duration(self, key: str, default: float) -> float:
+        try:
+            return float(self._opts.get(key, default))
+        except (TypeError, ValueError):
+            return default
+
+    @callback
+    def _apply_nachlauf(self, nplan: "logic.NachlaufPlan") -> None:
+        self._dispatch_timer("pc", nplan.pc, CONF_DENON_NACHLAUF_PC, DEFAULT_DENON_NACHLAUF_PC)
+        self._dispatch_timer("tv", nplan.tv, CONF_DENON_NACHLAUF_TV, DEFAULT_DENON_NACHLAUF_TV)
+
+    @callback
+    def _dispatch_timer(self, key: str, intent: str, conf: str, default: float) -> None:
+        if intent == logic.TIMER_ARM:
+            self._schedule_nachlauf(key, self._duration(conf, default))
+        elif intent in (logic.TIMER_CANCEL, logic.TIMER_PAUSE):
+            # PAUSE bricht nur den realen Countdown ab; das armed/paused-Buchwerk
+            # hält die Pure-Logic (Resume = Neustart nach Sleep-Ende).
+            self._cancel_nachlauf(key)
+
+    @callback
+    def _schedule_nachlauf(self, key: str, duration: float) -> None:
+        self._cancel_nachlauf(key)
+        self._nachlauf_tasks[key] = self.hass.async_create_task(
+            self._run_nachlauf(key, duration)
+        )
+
+    @callback
+    def _cancel_nachlauf(self, key: str) -> None:
+        task = self._nachlauf_tasks.pop(key, None)
+        if task is not None and not task.done():
+            task.cancel()
+
+    async def _run_nachlauf(self, key: str, duration: float) -> None:
+        """Wartet `duration` Sekunden, dann (gegatet) Denon aus. Abbrechbar:
+        PC/TV zurück oder Sleep (R14) canceln den Task vorher."""
+        try:
+            await asyncio.sleep(max(0.0, duration))
+        except asyncio.CancelledError:
+            raise
+        self._nachlauf_tasks.pop(key, None)
+        # Armed-Flag proaktiv löschen (self-heal vor dem nächsten Tick).
+        if key == "pc":
+            self._nachlauf_state.pc_armed = False
+        else:
+            self._nachlauf_state.tv_armed = False
+            self._nachlauf_state.tv_paused = False
+        if self.apply_enabled:
+            await self._denon_power_off(key)
+        else:
+            _LOGGER.debug(
+                "media_apply: Nachlauf %s abgelaufen (Shadow → kein Denon-Off)", key
+            )
+        if self.data is not None:
+            self.async_set_updated_data({
+                **self.data,
+                "denon_nachlauf_active": (
+                    self._nachlauf_state.pc_armed or self._nachlauf_state.tv_armed
+                ),
+            })
+
+    async def _denon_power_off(self, key: str) -> None:
+        denon = self._entity_id(CONF_DENON_PLAYER)
+        if not denon:
+            return
+        _LOGGER.info("media_apply: Denon-Nachlauf %s abgelaufen → turn_off %s", key, denon)
+        await self._svc("media_player", "turn_off", {"entity_id": denon})
 
     # ----- service surface -----
     async def async_set_apply_enabled(self, value: bool) -> None:

@@ -47,8 +47,18 @@ Analyse-Stand 2026-06-11 (alter Layer: `einhornzentrale/packages/media/`):
   Ramp-Up auf Pre-Quiet bei Quiet-Ende (HomePods rampen, Denon hart); Quiet-
   Eintritt bricht den laufenden Ramp ab → sofort 0.10 (Phase-1-quiet_override +
   Coordinator-Ramp-Cancel). 29 pure-logic-Tests grün.
-- **Phase 3 — Timer-Regeln:** Denon-Nachlauf R13/R14 (90s, abbrechbar,
-  Sleep pausiert TV-Timer); Sleep-TV-Off R24/R25 (45min-Warnung + Verlängern).
+- **Phase 3a — Denon-Nachlauf R13/R14 ✅ (0.3.0):** Pure-Logic
+  `decide_denon_nachlauf` (arm/cancel/pause-Flanken + Armed-Buchwerk) +
+  Coordinator-Countdown (abbrechbarer asyncio-Task pro Timer; Sleep pausiert
+  den TV-Timer, Resume = Neustart). Expiry → `media_player.turn_off` Denon,
+  gegatet durch `apply_enabled` (Shadow). Inputs `pc_power_on`/`tv_power_on`
+  als **DEFERRED Bindings** (PROFILE_PREFILL leer) bis FLEET-54 die core_devices-
+  Atomic-Slugs festklopft → bis dahin None ⇒ kein Arm (doppelt safe). `denon_power`
+  leitet sich notfalls aus dem Denon-media_player ab, `bio_state` aus core_state.
+  Observability: `binary_sensor …_denon_nachlauf_active`. 21 neue pure-logic-Tests.
+- **Phase 3b — Sleep-TV-Off R24/R25:** zurückgestellt — braucht TV-Warnhinweis +
+  Lichtschalter-Verlängern (grenzt an notification_router/door) + Sleep-Lautstärken.
+  Separate Karte, sobald Notify/Tasten-Scope geklärt.
 - **Phase 4 — Radio-Katalog-Port + TV-WoL + FIFO-Queue (R1/R3) + OQ-2.**
 
 ## Konstanten (§6, alle konfigurierbar)
