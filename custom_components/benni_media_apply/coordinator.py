@@ -285,6 +285,59 @@ class MediaApplyCoordinator(DataUpdateCoordinator[dict[str, Any]]):
     async def _async_update_data(self) -> dict[str, Any]:
         return self._compute()
 
+    def status(self) -> dict[str, Any]:
+        """Konsolidierter Apply-Status für Panel/Umbrella (WS-Contract = das
+        Bleibende). Read-only: nur ein frischer Inputs-Snapshot, keine Neuberechnung
+        des Plans (der kommt aus dem letzten Tick)."""
+        inp = self._build_inputs()
+        s = self.settings()
+        plan = {k: v for k, v in self._last_debug.items() if k != "nachlauf"}
+        execute = bool((self.data or {}).get("execute", False))
+        return {
+            "profile": self._profile,
+            "apply_enabled": self.apply_enabled,
+            "execute": execute,
+            "ramp_active": self._ramp_active,
+            "plan": plan,
+            "gates": {
+                "apply_enabled": self.apply_enabled,
+                "volume_apply_allowed": inp.volume_apply_allowed,
+                "execute": execute,
+                "stop_latch": inp.stop_latch,
+            },
+            "policy": {
+                "action": inp.action,
+                "homepods_should_pause": inp.homepods_should_pause,
+                "homepods_resume_allowed": inp.homepods_resume_allowed,
+                "homepods_target": inp.homepods_target,
+                "denon_target": inp.denon_target,
+                "subwoofer_allowed": inp.subwoofer_allowed,
+                "quiet_mode": inp.quiet_mode,
+            },
+            "devices": {
+                "homepods": {"configured": inp.homepods_configured, "state": inp.homepods_state, "volume": inp.homepods_volume},
+                "denon": {"configured": inp.denon_configured, "state": inp.denon_state, "volume": inp.denon_volume, "power_on": inp.denon_power_on},
+                "subwoofer": {"configured": inp.subwoofer_configured, "state": inp.subwoofer_state},
+            },
+            "nachlauf": {
+                "active": self._nachlauf_state.pc_armed or self._nachlauf_state.tv_armed,
+                "pc_armed": self._nachlauf_state.pc_armed,
+                "tv_armed": self._nachlauf_state.tv_armed,
+                "tv_paused": self._nachlauf_state.tv_paused,
+                "pc_power_on": inp.pc_power_on,
+                "tv_power_on": inp.tv_power_on,
+                "bio_sleep": inp.bio_sleep,
+                "tasks": sorted(self._nachlauf_tasks),
+            },
+            "settings": {
+                "ramp_steps": s.ramp_steps,
+                "ramp_step_delay_s": s.ramp_step_delay_s,
+                "tiny_delta": s.tiny_delta,
+                "ducked_level": s.ducked_level,
+            },
+            "bindings": self.bindings(),
+        }
+
     def debug(self) -> dict[str, Any]:
         return {
             **self._last_debug,

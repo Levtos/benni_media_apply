@@ -15,6 +15,7 @@ from homeassistant.core import HomeAssistant
 
 from .const import DATA_COORDINATOR, DOMAIN
 from .coordinator import MediaApplyCoordinator
+from .websocket_api import async_setup_websocket_api
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -26,7 +27,14 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     await coord.async_config_entry_first_refresh()
     coord.async_start()
 
-    hass.data.setdefault(DOMAIN, {})[entry.entry_id] = {DATA_COORDINATOR: coord}
+    domain_data = hass.data.setdefault(DOMAIN, {})
+    domain_data[entry.entry_id] = {DATA_COORDINATOR: coord}
+
+    # WS-Contract einmalig registrieren (Single-Instance, aber gegen Mehrfach-Setup
+    # geschützt). Der Flag-Key ist kein dict → vom _coordinator()-Scan ignoriert.
+    if not domain_data.get("_ws_registered"):
+        async_setup_websocket_api(hass)
+        domain_data["_ws_registered"] = True
 
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
     entry.async_on_unload(entry.add_update_listener(_async_reload))

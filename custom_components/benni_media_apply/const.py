@@ -21,6 +21,11 @@ NAME: Final[str] = "Benni Media Apply"
 
 DATA_COORDINATOR: Final[str] = "coordinator"
 
+# Panel / WebSocket-API. Der WS-Contract ist das Bleibende (Umbrella-fähig),
+# das Panel ist Wegwerf (folgt). Read frei, Schreiben Admin.
+WS_GET_STATUS: Final[str] = f"{DOMAIN}/get_status"
+WS_SET_APPLY_ENABLED: Final[str] = f"{DOMAIN}/set_apply_enabled"
+
 
 def unique_id(entry_id: str, suffix: str) -> str:
     """Domain- + entry-scoped unique_id (core_state-Blaupause, kollisionsfrei)."""
