@@ -14,15 +14,18 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections import deque
 from typing import Any, Optional
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import Event, HomeAssistant, callback
 from homeassistant.helpers.event import async_track_state_change_event
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
+from homeassistant.util import dt as dt_util
 
 from . import logic
 from .const import (
+    ACTION_NONE,
     ACTION_PAUSE,
     ACTION_RESUME,
     ACTION_START_RADIO,
@@ -94,6 +97,11 @@ class MediaApplyCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self._nachlauf_state = logic.NachlaufState()
         self._nachlauf_tasks: dict[str, asyncio.Task] = {}
         self._last_debug: dict[str, Any] = {}
+        # Observability (FLEET-46): Ramp-Fortschritt + Apply-Log-Ringpuffer.
+        self._ramp_step = 0
+        self._ramp_total = 0
+        self._log: deque[dict[str, Any]] = deque(maxlen=20)
+        self._last_log_sig: tuple | None = None
 
     # ----- profile / binding -----
     @property
@@ -264,6 +272,7 @@ class MediaApplyCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             inputs, self._nachlauf_state
         )
         self._last_debug = {**plan.as_dict(), "nachlauf": nplan.as_dict()}
+        self._maybe_log(plan)
         if plan.execute:
             self.hass.async_create_task(self._execute(plan))
         # Nachlauf-Flanken IMMER verarbeiten (Arm/Cancel-Buchwerk auch im Shadow,
@@ -285,6 +294,32 @@ class MediaApplyCoordinator(DataUpdateCoordinator[dict[str, Any]]):
     async def _async_update_data(self) -> dict[str, Any]:
         return self._compute()
 
+    def _maybe_log(self, plan: "logic.ApplyPlan") -> None:
+        """Apply-Log-Ringpuffer: jede nicht-triviale Plan-Änderung mit Timestamp +
+        execute-Flag (Shadow-Entscheidungen inklusive, für Observability)."""
+        hp_target = plan.homepods_levels[-1] if plan.homepods_levels else None
+        trivial = (
+            plan.homepods_action == ACTION_NONE
+            and not plan.homepods_levels
+            and plan.denon_set is None
+            and plan.subwoofer_set is None
+            and not plan.quiet_override
+        )
+        sig = (plan.homepods_action, hp_target, plan.denon_set, plan.subwoofer_set,
+               plan.quiet_override, plan.execute)
+        if trivial or sig == self._last_log_sig:
+            return
+        self._last_log_sig = sig
+        self._log.appendleft({
+            "ts": dt_util.utcnow().isoformat(),
+            "action": plan.homepods_action,
+            "homepods_target": hp_target,
+            "denon_target": plan.denon_set,
+            "subwoofer_set": plan.subwoofer_set,
+            "quiet": plan.quiet_override,
+            "executed": plan.execute,
+        })
+
     def status(self) -> dict[str, Any]:
         """Konsolidierter Apply-Status für Panel/Umbrella (WS-Contract = das
         Bleibende). Read-only: nur ein frischer Inputs-Snapshot, keine Neuberechnung
@@ -298,7 +333,10 @@ class MediaApplyCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             "apply_enabled": self.apply_enabled,
             "execute": execute,
             "ramp_active": self._ramp_active,
+            "ramp_step": self._ramp_step,
+            "ramp_total": self._ramp_total,
             "plan": plan,
+            "log": list(self._log),
             "gates": {
                 "apply_enabled": self.apply_enabled,
                 "volume_apply_allowed": inp.volume_apply_allowed,
@@ -412,14 +450,19 @@ class MediaApplyCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         if self._ramp_active == active:
             return
         self._ramp_active = active
+        if not active:
+            self._ramp_step = 0
+            self._ramp_total = 0
         if self.data is not None:
             self.async_set_updated_data({**self.data, "ramp_active": active})
 
     async def _run_ramp(self, entity_id: str, levels: list[float], delay: float) -> None:
         """HomePods-Volume-Ramp: Schritt für Schritt mit Delay, abbrechbar."""
+        self._ramp_total = len(levels)
         self._set_ramp_active(True)
         try:
-            for lv in levels:
+            for i, lv in enumerate(levels):
+                self._ramp_step = i + 1
                 await self.hass.services.async_call(
                     "media_player", "volume_set",
                     {"entity_id": entity_id, "volume_level": lv}, blocking=True,

@@ -15,6 +15,7 @@ from homeassistant.core import HomeAssistant
 
 from .const import DATA_COORDINATOR, DOMAIN
 from .coordinator import MediaApplyCoordinator
+from .view import async_remove_view, async_setup_view
 from .websocket_api import async_setup_websocket_api
 
 _LOGGER = logging.getLogger(__name__)
@@ -35,6 +36,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     if not domain_data.get("_ws_registered"):
         async_setup_websocket_api(hass)
         domain_data["_ws_registered"] = True
+    await async_setup_view(hass)
 
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
     entry.async_on_unload(entry.add_update_listener(_async_reload))
@@ -50,4 +52,11 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     unloaded = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
     if unloaded:
         hass.data[DOMAIN].pop(entry.entry_id, None)
+        # Letzte Instanz weg → Panel entfernen.
+        remaining = [
+            v for v in hass.data.get(DOMAIN, {}).values()
+            if isinstance(v, dict) and DATA_COORDINATOR in v
+        ]
+        if not remaining:
+            async_remove_view(hass)
     return unloaded

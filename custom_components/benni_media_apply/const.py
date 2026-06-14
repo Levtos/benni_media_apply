@@ -26,6 +26,16 @@ DATA_COORDINATOR: Final[str] = "coordinator"
 WS_GET_STATUS: Final[str] = f"{DOMAIN}/get_status"
 WS_SET_APPLY_ENABLED: Final[str] = f"{DOMAIN}/set_apply_enabled"
 
+# Panel (Wegwerf-Frontend auf dem WS-Contract).
+DATA_VIEW_PANEL: Final[str] = "_view_panel"
+DATA_VIEW_STATIC: Final[str] = "_view_static"
+PANEL_URL_PATH: Final[str] = "benni_media_apply"
+PANEL_TITLE: Final[str] = "Media Apply"
+PANEL_ICON: Final[str] = "mdi:cast-audio-variant"
+PANEL_ELEMENT: Final[str] = "bma-app"
+FRONTEND_DIR_URL: Final[str] = "/benni_media_apply_app"
+FRONTEND_ENTRY: Final[str] = f"{FRONTEND_DIR_URL}/main.js"
+
 
 def unique_id(entry_id: str, suffix: str) -> str:
     """Domain- + entry-scoped unique_id (core_state-Blaupause, kollisionsfrei)."""
