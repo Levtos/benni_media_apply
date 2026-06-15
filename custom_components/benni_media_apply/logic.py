@@ -33,6 +33,7 @@ from .const import (
     PLAYER_ADDRESSABLE_VALUES,
     PLAYER_PLAYING_VALUES,
     RADIO_CATALOG,
+    RADIO_STATION_LABELS,
 )
 
 
@@ -181,6 +182,16 @@ def resolve_radio_uri(station: Optional[str]) -> Optional[str]:
     if not station:
         return None
     return RADIO_CATALOG.get(station)
+
+
+def radio_defaults() -> list[dict[str, str]]:
+    """Default-Sender als Shortcut-Liste fürs Cockpit: [{key, name, uri}].
+    Name aus RADIO_STATION_LABELS (Fallback: Key), sortiert nach Anzeigenamen."""
+    out = [
+        {"key": key, "name": RADIO_STATION_LABELS.get(key, key), "uri": uri}
+        for key, uri in RADIO_CATALOG.items()
+    ]
+    return sorted(out, key=lambda s: s["name"].lower())
 
 
 def _direct(current: Optional[float], target: Optional[float]) -> list[float]:

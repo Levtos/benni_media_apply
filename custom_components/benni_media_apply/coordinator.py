@@ -69,6 +69,7 @@ from .const import (
     DEFAULT_DUCKED_LEVEL,
     DEFAULT_PROFILE,
     DEFAULT_RADIO_PLAY_DELAY,
+    DEFAULT_RADIO_SEARCH_LIMIT,
     DEFAULT_RADIO_START_SCRIPT,
     DEFAULT_RAMP_STEP_DELAY,
     DEFAULT_RAMP_STEPS,
@@ -466,6 +467,8 @@ class MediaApplyCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 "ducked_level": s.ducked_level,
                 "debounce_seconds": s.debounce_seconds,
             },
+            # Radio-Shortcuts fürs Cockpit (Defaults; Suche läuft via Action).
+            "radio": {"defaults": logic.radio_defaults()},
             "bindings": self.bindings(),
         }
 
@@ -661,6 +664,67 @@ class MediaApplyCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             return
         _LOGGER.info("media_apply: Denon-Nachlauf %s abgelaufen → turn_off %s", key, denon)
         await self._svc("media_player", "turn_off", {"entity_id": denon})
+
+    # ----- Radio-Shortcuts (manuell, Phase 4b) -----
+    def _ma_config_entry_id(self) -> Optional[str]:
+        """Config-Entry der Music-Assistant-Integration (für den Search-Service)."""
+        for entry in self.hass.config_entries.async_entries("music_assistant"):
+            return entry.entry_id
+        return None
+
+    async def async_play_radio(self, media_id: str) -> dict[str, Any]:
+        """MANUELL einen Sender abspielen (Cockpit-Shortcut / Suchtreffer).
+
+        Bewusster User-Befehl → spielt SOFORT, **unabhängig vom Shadow-Gate**
+        (`apply_enabled`); nur der automatische Policy-Apply ist shadow-gated.
+        `media_id` ist eine MA-URI (radiobrowser://, library://, …)."""
+        hp = self._entity_id(CONF_HOMEPODS_PLAYER)
+        if not hp:
+            raise ValueError("HomePods-Player nicht gebunden")
+        if not media_id:
+            raise ValueError("media_id fehlt")
+        await self._svc(
+            "music_assistant", "play_media",
+            {
+                "entity_id": hp, "media_id": media_id,
+                "media_type": RADIO_MEDIA_TYPE, "enqueue": RADIO_ENQUEUE,
+            },
+        )
+        self.hass.async_create_task(self._radio_play_after(hp))
+        return {"played": media_id, "target": hp}
+
+    async def async_search_radio(self, query: str, limit: int | None = None) -> list[dict[str, Any]]:
+        """Radiosender über Music Assistant suchen → normalisierte Trefferliste
+        [{name, uri, image, favorite}]. Leere/keine Treffer → []."""
+        query = (query or "").strip()
+        if not query:
+            return []
+        entry_id = self._ma_config_entry_id()
+        if not entry_id:
+            raise ValueError("music_assistant nicht geladen")
+        lim = int(limit or DEFAULT_RADIO_SEARCH_LIMIT)
+        try:
+            resp = await self.hass.services.async_call(
+                "music_assistant", "search",
+                {"config_entry_id": entry_id, "name": query,
+                 "media_type": ["radio"], "limit": lim},
+                blocking=True, return_response=True,
+            )
+        except Exception as err:  # noqa: BLE001 — Suche darf das Cockpit nicht crashen
+            _LOGGER.warning("media_apply: radio search '%s' failed: %s", query, err)
+            return []
+        radio = (resp or {}).get("radio") or []
+        out: list[dict[str, Any]] = []
+        for item in radio:
+            if not isinstance(item, dict) or not item.get("uri"):
+                continue
+            out.append({
+                "name": item.get("name") or item["uri"],
+                "uri": item["uri"],
+                "image": item.get("image"),
+                "favorite": bool(item.get("favorite")),
+            })
+        return out
 
     # ----- service surface -----
     async def async_set_apply_enabled(self, value: bool) -> None:
