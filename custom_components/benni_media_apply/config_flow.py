@@ -19,6 +19,7 @@ from homeassistant.helpers import selector
 
 from .const import (
     CONF_APPLY_ENABLED,
+    CONF_DEBOUNCE_SECONDS,
     CONF_DENON_NACHLAUF_PC,
     CONF_DENON_NACHLAUF_TV,
     CONF_DENON_PLAYER,
@@ -31,6 +32,7 @@ from .const import (
     CONF_SUBWOOFER_SWITCH,
     CONF_TINY_DELTA,
     DEFAULT_APPLY_ENABLED,
+    DEFAULT_DEBOUNCE_SECONDS,
     DEFAULT_DENON_NACHLAUF_PC,
     DEFAULT_DENON_NACHLAUF_TV,
     DEFAULT_DUCKED_LEVEL,
@@ -71,6 +73,8 @@ _RAMP_FIELDS: dict[str, tuple[Any, Any]] = {
     CONF_RAMP_STEP_DELAY: (DEFAULT_RAMP_STEP_DELAY, vol.All(vol.Coerce(float), vol.Range(min=0.1, max=10.0))),
     CONF_TINY_DELTA: (DEFAULT_TINY_DELTA, vol.All(vol.Coerce(float), vol.Range(min=0.0, max=0.5))),
     CONF_DUCKED_LEVEL: (DEFAULT_DUCKED_LEVEL, vol.All(vol.Coerce(float), vol.Range(min=0.0, max=1.0))),
+    # R2 — Debounce-Fenster (Sekunden, 0 = sofort). Quiet bricht ohnehin durch.
+    CONF_DEBOUNCE_SECONDS: (DEFAULT_DEBOUNCE_SECONDS, vol.All(vol.Coerce(float), vol.Range(min=0.0, max=60.0))),
     # Phase 3 — Denon-Nachlauf (R13/R14), Sekunden.
     CONF_DENON_NACHLAUF_PC: (DEFAULT_DENON_NACHLAUF_PC, vol.All(vol.Coerce(float), vol.Range(min=0.0, max=600.0))),
     CONF_DENON_NACHLAUF_TV: (DEFAULT_DENON_NACHLAUF_TV, vol.All(vol.Coerce(float), vol.Range(min=0.0, max=600.0))),

@@ -22,10 +22,14 @@ from .const import (
     ACTION_PAUSE,
     ACTION_RESUME,
     ACTION_START_RADIO,
+    DEFAULT_DEBOUNCE_SECONDS,
     DEFAULT_DUCKED_LEVEL,
     DEFAULT_RAMP_STEP_DELAY,
     DEFAULT_RAMP_STEPS,
     DEFAULT_TINY_DELTA,
+    EXEC_DEBOUNCE,
+    EXEC_IMMEDIATE,
+    EXEC_SHADOW,
     PLAYER_ADDRESSABLE_VALUES,
     PLAYER_PLAYING_VALUES,
 )
@@ -72,6 +76,7 @@ class RampSettings:
     ramp_step_delay_s: float = DEFAULT_RAMP_STEP_DELAY
     tiny_delta: float = DEFAULT_TINY_DELTA
     ducked_level: float = DEFAULT_DUCKED_LEVEL
+    debounce_seconds: float = DEFAULT_DEBOUNCE_SECONDS  # R2-Fenster (Coordinator-Timing)
 
 
 @dataclass
@@ -99,6 +104,18 @@ class ApplyPlan:
     quiet_override: bool = False           # Quiet → direkt, laufenden Ramp abbrechen
     is_restore: bool = False               # R20: Quiet-Ende → Ramp-Up auf Pre-Quiet
     reasons: list = field(default_factory=list)
+
+    @property
+    def has_work(self) -> bool:
+        """True, wenn der Plan tatsächlich etwas am Gerät tut. Triviale Pläne
+        (nur Re-Eval ohne Soll≠Ist) dürfen ein laufendes Debounce-Fenster NICHT
+        neu starten — sonst hungert ein gepufferter echter Plan aus."""
+        return bool(
+            self.homepods_action != ACTION_NONE
+            or self.homepods_levels
+            or self.denon_set is not None
+            or self.subwoofer_set is not None
+        )
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -161,6 +178,27 @@ def _direct(current: Optional[float], target: Optional[float]) -> list[float]:
     if _eq(t, round(_clamp(current, 0.0, 1.0), 3)):
         return []
     return [t]
+
+
+# --------------------------------------------------------------------------- #
+# Ausführungs-Modus (R2 Debounce / R3 Queue-statt-Race)
+# --------------------------------------------------------------------------- #
+def execution_mode(plan: "ApplyPlan") -> str:
+    """Entscheidet, WIE der berechnete Plan zum Gerät kommt (Pure-Teil von R2/R3).
+
+    - ``EXEC_SHADOW``: ``apply_enabled`` aus → gar nicht ausführen (nur Preview).
+    - ``EXEC_IMMEDIATE``: Quiet-Mode bricht sofort durch — kein Debounce, der
+      laufende Ramp wird abgebrochen (R2/R3-Ausnahme).
+    - ``EXEC_DEBOUNCE``: Normalfall — Ausführung wartet das R2-Fenster ab, sodass
+      ein Trigger-Burst zu EINER konsolidierten Aktion zusammenfällt.
+
+    Das reale Timing/Serialisieren liegt im Coordinator; hier wohnt nur die
+    HA-freie Klassifikation (testbar)."""
+    if not plan.execute:
+        return EXEC_SHADOW
+    if plan.quiet_override:
+        return EXEC_IMMEDIATE
+    return EXEC_DEBOUNCE
 
 
 # --------------------------------------------------------------------------- #

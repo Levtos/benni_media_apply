@@ -32,7 +32,7 @@ Analyse-Stand 2026-06-11 (alter Layer: `einhornzentrale/packages/media/`):
 | R20-Restore (Quiet-Ende → Pre-Quiet + Ramp-Up) | — | **NEU, spätere Phase** |
 | R13/R14 Denon-Nachlauf 90s | nicht gefunden | **NEU, spätere Phase** |
 | R24/R25 Sleep-TV-Off 45min + verlängern | nicht gefunden | **NEU, spätere Phase** |
-| R1/R3 Idempotenz + FIFO-Queue | tlw. (`mode: restart`) | Idempotenz Ph1; Queue spätere Phase |
+| R1/R3 Idempotenz + FIFO-Queue | tlw. (`mode: restart`) | Idempotenz Ph1; **Debounce/Serialize Ph4a** |
 | OQ-2 ATV-Pre-Snapshot persistieren | RAM (Toolbox) | **NEU, spätere Phase** |
 
 ## Phasen
@@ -59,7 +59,17 @@ Analyse-Stand 2026-06-11 (alter Layer: `einhornzentrale/packages/media/`):
 - **Phase 3b — Sleep-TV-Off R24/R25:** zurückgestellt — braucht TV-Warnhinweis +
   Lichtschalter-Verlängern (grenzt an notification_router/door) + Sleep-Lautstärken.
   Separate Karte, sobald Notify/Tasten-Scope geklärt.
-- **Phase 4 — Radio-Katalog-Port + TV-WoL + FIFO-Queue (R1/R3) + OQ-2.**
+- **Phase 4a — Debounce (R2) + serialisierte Ausführung (R3) ✅ (0.7.0):** Geräte-
+  Schaltung läuft jetzt über ein konfigurierbares Debounce-Fenster (`debounce_seconds`,
+  default 5s) → Trigger-Bursts fallen zu EINER Aktion zusammen; **Quiet bricht
+  sofort durch** (`EXEC_IMMEDIATE`, Ramp-Abbruch), Shadow führt gar nicht aus.
+  Ausführung serialisiert über `asyncio.Lock` (latest-wins statt Race, R3). Triviale
+  Re-Evals (kein Soll≠Ist) stoßen das Fenster nicht neu an (`ApplyPlan.has_work`).
+  Pure-Logic: `logic.execution_mode(plan)` (shadow/immediate/debounce). Cockpit
+  (FLEET-70): `status().debounce = {window_s, pending}` + `settings.debounce_seconds`.
+  6 neue pure-logic-Tests (51 grün gesamt). Timing bleibt Coordinator (HA), nur die
+  Klassifikation ist HA-frei getestet.
+- **Phase 4b — Radio-Katalog-Port + TV-WoL (R12, kein Debounce) + OQ-2.** offen.
 
 ## Konstanten (§6, alle konfigurierbar)
 16 Ramp-Schritte · 1s Schrittdelay · 0.02 Tiny-Delta · 0.10 Ducked · 90s/90s
