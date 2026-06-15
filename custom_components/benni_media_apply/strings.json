@@ -21,6 +21,9 @@
           "volume_apply_allowed_entity": "media_policy · Volume Apply Allowed",
           "quiet_mode_entity": "media_state · Quiet Mode",
           "stop_latch_entity": "Media-Stop-Latch (input_boolean, shared)",
+          "radio_station_entity": "Radio · Sender (input_select)",
+          "radio_ready_entity": "Radio · Ready (binary_sensor)",
+          "manual_playback_entity": "Radio · Manuelle Wiedergabe aktiv (binary_sensor)",
           "homepods_player_entity": "HomePods · Media-Player (MA-Gruppe)",
           "denon_player_entity": "Denon · Media-Player",
           "subwoofer_switch_entity": "Subwoofer · Plug (switch)"
@@ -36,7 +39,8 @@
           "tiny_delta": "Tiny-Delta (≤ → direkt setzen, kein Ramp)",
           "ducked_level": "Ducked-Level (Quiet)",
           "debounce_seconds": "Debounce-Fenster (s, 0 = sofort; Quiet bricht durch)",
-          "radio_start_script": "Radio-Start-Script (start_radio-Delegation)"
+          "radio_start_script": "Radio-Start-Script (Fallback, wenn kein URI auflösbar)",
+          "radio_play_delay_seconds": "Radio: Pause play_media → media_play (s)"
         }
       }
     },
@@ -64,6 +68,9 @@
           "volume_apply_allowed_entity": "media_policy · Volume Apply Allowed",
           "quiet_mode_entity": "media_state · Quiet Mode",
           "stop_latch_entity": "Media-Stop-Latch (input_boolean, shared)",
+          "radio_station_entity": "Radio · Sender (input_select)",
+          "radio_ready_entity": "Radio · Ready (binary_sensor)",
+          "manual_playback_entity": "Radio · Manuelle Wiedergabe aktiv (binary_sensor)",
           "homepods_player_entity": "HomePods · Media-Player (MA-Gruppe)",
           "denon_player_entity": "Denon · Media-Player",
           "subwoofer_switch_entity": "Subwoofer · Plug (switch)"
@@ -78,7 +85,8 @@
           "tiny_delta": "Tiny-Delta (≤ → direkt setzen, kein Ramp)",
           "ducked_level": "Ducked-Level (Quiet)",
           "debounce_seconds": "Debounce-Fenster (s, 0 = sofort; Quiet bricht durch)",
-          "radio_start_script": "Radio-Start-Script (start_radio-Delegation)"
+          "radio_start_script": "Radio-Start-Script (Fallback, wenn kein URI auflösbar)",
+          "radio_play_delay_seconds": "Radio: Pause play_media → media_play (s)"
         }
       }
     }

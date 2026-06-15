@@ -391,3 +391,48 @@ def test_has_work_false_for_trivial_plan():
     # → darf ein laufendes Debounce-Fenster nicht neu anstoßen.
     assert L.ApplyPlan().has_work is False
     assert L.ApplyPlan(quiet_override=True).has_work is False
+
+
+# --------------------------------------------- Phase 4b: Radio-Katalog-Port
+def test_resolve_radio_uri_known_station():
+    assert L.resolve_radio_uri("1live") == C.RADIO_CATALOG["1live"]
+    assert L.resolve_radio_uri("jack_fm_berlin").startswith("radiobrowser://radio/")
+
+
+def test_resolve_radio_uri_unknown_or_none():
+    assert L.resolve_radio_uri("does_not_exist") is None
+    assert L.resolve_radio_uri(None) is None
+    assert L.resolve_radio_uri("") is None
+
+
+def test_start_radio_resolves_uri_from_station():
+    p = _plan(_inp(action=C.ACTION_START_RADIO, homepods_state="idle", radio_station="wdr4"))
+    assert p.homepods_action == C.ACTION_START_RADIO
+    assert p.radio_uri == C.RADIO_CATALOG["wdr4"]
+
+
+def test_start_radio_unbound_gates_still_allowed():
+    # radio_ready/manual_playback ungebunden (None) → non-regressiv erlauben.
+    p = _plan(_inp(action=C.ACTION_START_RADIO, homepods_state="idle",
+                   radio_station="gayfm", radio_ready=None, manual_playback=None))
+    assert p.homepods_action == C.ACTION_START_RADIO
+
+
+def test_start_radio_blocked_when_not_ready():
+    p = _plan(_inp(action=C.ACTION_START_RADIO, homepods_state="idle",
+                   radio_station="gayfm", radio_ready=False))
+    assert p.homepods_action == C.ACTION_NONE
+
+
+def test_start_radio_blocked_when_manual_playback():
+    p = _plan(_inp(action=C.ACTION_START_RADIO, homepods_state="idle",
+                   radio_station="gayfm", manual_playback=True))
+    assert p.homepods_action == C.ACTION_NONE
+
+
+def test_start_radio_unknown_station_no_uri_falls_back():
+    # Sender unbekannt → action bleibt start_radio, aber radio_uri None
+    # (Coordinator delegiert dann ans YAML-Script).
+    p = _plan(_inp(action=C.ACTION_START_RADIO, homepods_state="idle", radio_station="xyz"))
+    assert p.homepods_action == C.ACTION_START_RADIO
+    assert p.radio_uri is None

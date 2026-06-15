@@ -27,7 +27,7 @@ Analyse-Stand 2026-06-11 (alter Layer: `einhornzentrale/packages/media/`):
 | Subwoofer-Plug | on/off | **Phase 1** |
 | Apply-Gate | `system_apply_ready` × `volume_apply_allowed` | **Phase 1**: eigenes `apply_enabled` × `volume_apply_allowed` |
 | Stop-Latch | `input_boolean.media_stop_latch` (shared) | konsumiert (media_policy liest ihn auch) |
-| Radio-Katalog (Sender-Map + MA play_media) | `media_scripts` | **delegiert Ph1**, Port später |
+| Radio-Katalog (Sender-Map + MA play_media) | `media_scripts` | **portiert Ph4b** (inline RADIO_CATALOG + Script-Fallback) |
 | TV-WoL | `media_automations` #1 | später (bleibt vorerst YAML) |
 | R20-Restore (Quiet-Ende → Pre-Quiet + Ramp-Up) | — | **NEU, spätere Phase** |
 | R13/R14 Denon-Nachlauf 90s | nicht gefunden | **NEU, spätere Phase** |
@@ -72,7 +72,16 @@ Analyse-Stand 2026-06-11 (alter Layer: `einhornzentrale/packages/media/`):
   Timing bleibt Coordinator (HA), nur die Klassifikation ist HA-frei getestet.
   **Offen für FLEET-70:** Frontend rendert `remaining_s`/`plan` noch nicht
   (Umbrella `benni_media` Apply-Tab) — WS-Contract liefert es bereits.
-- **Phase 4b — Radio-Katalog-Port + TV-WoL (R12, kein Debounce) + OQ-2.** offen.
+- **Phase 4b — Radio-Katalog-Port ✅ (0.8.0):** Sender→URI-Katalog (`RADIO_CATALOG`,
+  6 Sender, KOPIE aus `script.media_radio_start`) inline portiert. `start_radio`
+  ruft jetzt direkt `music_assistant.play_media` (media_type=radio, enqueue=replace)
+  + verzögertes `media_play` (`radio_play_delay_seconds`, 2s); Sender aus gebundenem
+  `input_select.media_radio_station`. Gates wie im Script: `media_radio_ready` an +
+  `media_manual_playback_active` aus (beide None=ungebunden ⇒ non-regressiv erlaubt).
+  **Fallback:** Sender ungebunden/unbekannt → weiterhin Script-Delegation. Pure-Logic
+  `logic.resolve_radio_uri()` + start_radio-Gates, 7 neue Tests (58 grün). YAML-Script
+  bleibt vorerst (Stop/Clear-Latch + Fallback); Löschen erst beim FLEET-36-Cut-over.
+- **Phase 4c — TV-WoL (R12, kein Debounce) + OQ-2 (ATV-Pre-Snapshot persistieren).** offen.
 
 ## Konstanten (§6, alle konfigurierbar)
 16 Ramp-Schritte · 1s Schrittdelay · 0.02 Tiny-Delta · 0.10 Ducked · 90s/90s
