@@ -142,10 +142,11 @@ PROFILE_PREFILL: Final[dict[str, dict[str, Any]]] = {
         # Kandidaten (zur Bindung nach #54): PC-Power-Atomic, TV-Power-Atomic
         # (WebOS/Wattage, R11), denon_power → binary_sensor.living_denon_plug_power_active_atomic,
         # bio_state → sensor.<...>_core_state_bio_state.
-        CONF_PC_POWER: "",
-        CONF_TV_POWER: "",
-        CONF_DENON_POWER: "",
-        CONF_BIO_STATE: "",
+        # Post-FLEET-54: an core_devices/core_state gebunden (Denon-Nachlauf R13/R14).
+        CONF_PC_POWER: "sensor.benni_device_living_pc",
+        CONF_TV_POWER: "sensor.benni_device_living_tv",
+        CONF_DENON_POWER: "",  # leer = aus Denon-Player abgeleitet (sicherer als avr-Statemix)
+        CONF_BIO_STATE: "sensor.benni_core_state_bio_state",
     },
     PROFILE_ELTERN: {},
 }
