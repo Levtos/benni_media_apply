@@ -32,6 +32,7 @@ from .const import (
     EXEC_SHADOW,
     PLAYER_ADDRESSABLE_VALUES,
     PLAYER_PLAYING_VALUES,
+    RADIO_CATALOG,
 )
 
 
@@ -54,6 +55,10 @@ class Inputs:
     # aus media_state:
     quiet_mode: bool = False
     stop_latch: bool = False
+    # Radio (Phase 4b). None = ungebunden/unbekannt ⇒ non-regressiv (erlauben).
+    radio_station: Optional[str] = None
+    radio_ready: Optional[bool] = None
+    manual_playback: Optional[bool] = None
     # aktueller Geräte-Zustand (Ist, für Idempotenz):
     homepods_configured: bool = False
     homepods_state: Optional[str] = None
@@ -103,6 +108,7 @@ class ApplyPlan:
     subwoofer_set: Optional[bool] = None   # True/False/None (None = no-op)
     quiet_override: bool = False           # Quiet → direkt, laufenden Ramp abbrechen
     is_restore: bool = False               # R20: Quiet-Ende → Ramp-Up auf Pre-Quiet
+    radio_uri: Optional[str] = None        # aufgelöster Sender-URI (start_radio inline)
     reasons: list = field(default_factory=list)
 
     @property
@@ -127,6 +133,7 @@ class ApplyPlan:
             "subwoofer_set": self.subwoofer_set,
             "quiet_override": self.quiet_override,
             "is_restore": self.is_restore,
+            "radio_uri": self.radio_uri,
             "reasons": list(self.reasons),
         }
 
@@ -166,6 +173,14 @@ def ramp_levels(
         return [t]
     n = max(1, int(steps))
     return [round(c + delta * i / n, 3) for i in range(1, n + 1)]
+
+
+def resolve_radio_uri(station: Optional[str]) -> Optional[str]:
+    """Sender-Key → radiobrowser-URI (Phase 4b Katalog-Port). None bei
+    ungebundenem/unbekanntem Sender ⇒ Coordinator fällt auf das YAML-Script zurück."""
+    if not station:
+        return None
+    return RADIO_CATALOG.get(station)
 
 
 def _direct(current: Optional[float], target: Optional[float]) -> list[float]:
@@ -250,8 +265,16 @@ def decide_apply(
     ):
         p.homepods_action = ACTION_RESUME
         reasons.append("action:resume")
-    elif action == ACTION_START_RADIO and not hp_playing and not inp.stop_latch:
+    elif (
+        action == ACTION_START_RADIO
+        and not hp_playing
+        and not inp.stop_latch
+        # Radio-Gates wie im YAML-Script (None = ungebunden ⇒ non-regressiv erlauben).
+        and inp.radio_ready is not False
+        and inp.manual_playback is not True
+    ):
         p.homepods_action = ACTION_START_RADIO
+        p.radio_uri = resolve_radio_uri(inp.radio_station)
         reasons.append("action:start_radio")
     else:
         p.homepods_action = ACTION_NONE

@@ -93,6 +93,10 @@ CONF_VOLUME_APPLY_ALLOWED: Final[str] = "volume_apply_allowed_entity"
 CONF_QUIET_MODE: Final[str] = "quiet_mode_entity"
 # Stop-Latch (shared Helper):
 CONF_STOP_LATCH: Final[str] = "stop_latch_entity"
+# Radio (Phase 4b — Katalog-Port aus script.media_radio_start):
+CONF_RADIO_STATION: Final[str] = "radio_station_entity"        # input_select (Sender-Key)
+CONF_RADIO_READY: Final[str] = "radio_ready_entity"            # binary_sensor (Sender gültig)
+CONF_MANUAL_PLAYBACK: Final[str] = "manual_playback_entity"    # binary_sensor (manuell aktiv)
 # Geräte (Apply-Targets):
 CONF_HOMEPODS_PLAYER: Final[str] = "homepods_player_entity"
 CONF_DENON_PLAYER: Final[str] = "denon_player_entity"
@@ -118,6 +122,7 @@ WATCH_KEYS: Final[tuple[str, ...]] = (
     CONF_HOMEPODS_SHOULD_PAUSE, CONF_HOMEPODS_RESUME_ALLOWED,
     CONF_SUBWOOFER_ALLOWED, CONF_VOLUME_APPLY_ALLOWED,
     CONF_QUIET_MODE, CONF_STOP_LATCH,
+    CONF_RADIO_STATION, CONF_RADIO_READY, CONF_MANUAL_PLAYBACK,
     CONF_HOMEPODS_PLAYER, CONF_DENON_PLAYER, CONF_SUBWOOFER_SWITCH,
     CONF_PC_POWER, CONF_TV_POWER, CONF_DENON_POWER, CONF_BIO_STATE,
 )
@@ -140,6 +145,9 @@ PROFILE_PREFILL: Final[dict[str, dict[str, Any]]] = {
         CONF_VOLUME_APPLY_ALLOWED: "binary_sensor.benni_media_policy_volume_apply_allowed",
         CONF_QUIET_MODE: "binary_sensor.benni_media_state_quiet_mode",
         CONF_STOP_LATCH: "input_boolean.media_stop_latch",
+        CONF_RADIO_STATION: "input_select.media_radio_station",
+        CONF_RADIO_READY: "binary_sensor.media_radio_ready",
+        CONF_MANUAL_PLAYBACK: "binary_sensor.media_manual_playback_active",
         CONF_HOMEPODS_PLAYER: "media_player.living_homepods_ma_group",
         CONF_DENON_PLAYER: "media_player.living_denon",
         CONF_SUBWOOFER_SWITCH: "switch.living_subwoofer_plug",
@@ -169,8 +177,11 @@ CONF_DUCKED_LEVEL: Final[str] = "ducked_level"
 # R2 — Debounce: Szenario-Übergänge warten dieses Fenster, Trigger-Bursts werden
 # zu EINER Aktion konsolidiert. Quiet bricht durch (kein Debounce). 5s kalibrierbar.
 CONF_DEBOUNCE_SECONDS: Final[str] = "debounce_seconds"
-# Service-Delegation für start_radio (Radio-Katalog bleibt vorerst YAML).
+# Service-Delegation für start_radio — Fallback, wenn kein URI auflösbar
+# (Sender ungebunden/unbekannt). Phase 4b portiert den Katalog inline.
 CONF_RADIO_START_SCRIPT: Final[str] = "radio_start_script"
+# Verzögerung zwischen play_media und media_play (Sekunden), wie im YAML-Script.
+CONF_RADIO_PLAY_DELAY: Final[str] = "radio_play_delay_seconds"
 
 DEFAULT_RAMP_STEPS: Final[int] = 16
 DEFAULT_RAMP_STEP_DELAY: Final[float] = 1.0
@@ -178,6 +189,21 @@ DEFAULT_TINY_DELTA: Final[float] = 0.02
 DEFAULT_DUCKED_LEVEL: Final[float] = 0.10
 DEFAULT_DEBOUNCE_SECONDS: Final[float] = 5.0
 DEFAULT_RADIO_START_SCRIPT: Final[str] = "script.media_radio_start"
+DEFAULT_RADIO_PLAY_DELAY: Final[float] = 2.0
+
+# Radio-Katalog (Phase 4b) — Sender-Key → radiobrowser-URI. KOPIE aus dem
+# YAML-Script media_radio_start (Strangler: inline statt Script-Delegation).
+# Keys = Optionen von input_select.media_radio_station.
+RADIO_CATALOG: Final[dict[str, str]] = {
+    "1live": "radiobrowser://radio/b2cbd1fd-275d-432a-8b20-37dcb3572315",
+    "wdr2_bergisches_land": "radiobrowser://radio/960c0309-0601-11e8-ae97-52543be04c81",
+    "gayfm": "radiobrowser://radio/960eb9c7-0601-11e8-ae97-52543be04c81",
+    "ndr1_niedersachsen": "radiobrowser://radio/b6240170-f81f-4fc7-9183-5f9ebbe8b8d8",
+    "wdr4": "radiobrowser://radio/905f3c23-60fc-4636-9e82-9d33078b8793",
+    "jack_fm_berlin": "radiobrowser://radio/96109543-0601-11e8-ae97-52543be04c81",
+}
+RADIO_MEDIA_TYPE: Final[str] = "radio"
+RADIO_ENQUEUE: Final[str] = "replace"
 
 # Phase 3 — Denon-Nachlauf (R13/R14), Sekunden (Lastenheft 20_helpers: 90s).
 CONF_DENON_NACHLAUF_PC: Final[str] = "denon_nachlauf_pc_seconds"

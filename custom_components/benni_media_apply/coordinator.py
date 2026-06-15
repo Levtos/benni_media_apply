@@ -43,10 +43,14 @@ from .const import (
     CONF_HOMEPODS_PLAYER,
     CONF_HOMEPODS_RESUME_ALLOWED,
     CONF_HOMEPODS_SHOULD_PAUSE,
+    CONF_MANUAL_PLAYBACK,
     CONF_PC_POWER,
     CONF_PROFILE,
     CONF_QUIET_MODE,
+    CONF_RADIO_PLAY_DELAY,
+    CONF_RADIO_READY,
     CONF_RADIO_START_SCRIPT,
+    CONF_RADIO_STATION,
     CONF_RAMP_STEP_DELAY,
     CONF_RAMP_STEPS,
     CONF_STOP_LATCH,
@@ -64,6 +68,7 @@ from .const import (
     DEFAULT_DENON_NACHLAUF_TV,
     DEFAULT_DUCKED_LEVEL,
     DEFAULT_PROFILE,
+    DEFAULT_RADIO_PLAY_DELAY,
     DEFAULT_RADIO_START_SCRIPT,
     DEFAULT_RAMP_STEP_DELAY,
     DEFAULT_RAMP_STEPS,
@@ -73,6 +78,8 @@ from .const import (
     EXEC_IMMEDIATE,
     EXEC_SHADOW,
     PLAYER_OFF_VALUES,
+    RADIO_ENQUEUE,
+    RADIO_MEDIA_TYPE,
     PROFILE_PREFILL,
     PROFILES,
     WATCH_KEYS,
@@ -260,6 +267,9 @@ class MediaApplyCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             subwoofer_allowed=_bool(self._state(CONF_SUBWOOFER_ALLOWED)),
             quiet_mode=_bool(self._state(CONF_QUIET_MODE)),
             stop_latch=_bool(self._state(CONF_STOP_LATCH)),
+            radio_station=self._state(CONF_RADIO_STATION),
+            radio_ready=self._tri_bool(CONF_RADIO_READY),
+            manual_playback=self._tri_bool(CONF_MANUAL_PLAYBACK),
             homepods_configured=bool(self._entity_id(CONF_HOMEPODS_PLAYER)),
             homepods_state=self._state(CONF_HOMEPODS_PLAYER),
             homepods_volume=self._attr_float(CONF_HOMEPODS_PLAYER, "volume_level"),
@@ -495,8 +505,22 @@ class MediaApplyCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             elif plan.homepods_action == ACTION_RESUME:
                 await self._svc("media_player", "media_play", {"entity_id": hp})
             elif plan.homepods_action == ACTION_START_RADIO:
-                radio = self._opts.get(CONF_RADIO_START_SCRIPT, DEFAULT_RADIO_START_SCRIPT)
-                await self._svc("script", "turn_on", {"entity_id": radio})
+                if plan.radio_uri:
+                    # Inline-Port (Phase 4b): play_media → kurze Pause → media_play,
+                    # wie das YAML-Script. Idempotenz-Gate (nicht schon playing) hat
+                    # die Pure-Logic bereits geprüft.
+                    await self._svc(
+                        "music_assistant", "play_media",
+                        {
+                            "entity_id": hp, "media_id": plan.radio_uri,
+                            "media_type": RADIO_MEDIA_TYPE, "enqueue": RADIO_ENQUEUE,
+                        },
+                    )
+                    self.hass.async_create_task(self._radio_play_after(hp))
+                else:
+                    # Fallback: Sender ungebunden/unbekannt → YAML-Script delegieren.
+                    radio = self._opts.get(CONF_RADIO_START_SCRIPT, DEFAULT_RADIO_START_SCRIPT)
+                    await self._svc("script", "turn_on", {"entity_id": radio})
 
         # ----- HomePods-Volume (Ramp oder direkt) -----
         if plan.homepods_levels and hp:
@@ -558,6 +582,16 @@ class MediaApplyCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             _LOGGER.warning("media_apply: ramp on %s failed: %s", entity_id, err)
         finally:
             self._set_ramp_active(False)
+
+    async def _radio_play_after(self, entity_id: str) -> None:
+        """play_media füllt nur die Queue; nach kurzer Pause media_play (wie das
+        YAML-Script). Geräte-Fehler dürfen Apply nicht crashen."""
+        delay = self._duration(CONF_RADIO_PLAY_DELAY, DEFAULT_RADIO_PLAY_DELAY)
+        try:
+            await asyncio.sleep(max(0.0, delay))
+        except asyncio.CancelledError:
+            raise
+        await self._svc("media_player", "media_play", {"entity_id": entity_id})
 
     # ----- Denon-Nachlauf (R13/R14) -----
     def _duration(self, key: str, default: float) -> float:
