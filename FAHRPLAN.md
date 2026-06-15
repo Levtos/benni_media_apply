@@ -81,6 +81,14 @@ Analyse-Stand 2026-06-11 (alter Layer: `einhornzentrale/packages/media/`):
   **Fallback:** Sender ungebunden/unbekannt → weiterhin Script-Delegation. Pure-Logic
   `logic.resolve_radio_uri()` + start_radio-Gates, 7 neue Tests (58 grün). YAML-Script
   bleibt vorerst (Stop/Clear-Latch + Fallback); Löschen erst beim FLEET-36-Cut-over.
+- **Radio-Shortcuts + MA-Suche ✅ (0.9.0):** manuelle Sender-Steuerung fürs Cockpit.
+  `async_play_radio(media_id)` spielt einen Sender SOFORT (MA `play_media` radio/replace
+  + verzögertes `media_play`) — **Shadow-Bypass**: bewusster User-Befehl, unabhängig von
+  `apply_enabled` (nur der automatische Policy-Apply bleibt gegatet). `async_search_radio(query)`
+  sucht via `music_assistant.search` (media_type=radio, return_response) → normalisierte
+  Treffer `{name,uri,image,favorite}` (mehrere Provider: radiobrowser/library/ard). Defaults
+  als Shortcut-Liste in `status().radio.defaults` (`logic.radio_defaults()`, getestet).
+  Bedient wird beides über das Umbrella-Write-Gateway (`apply/play_radio|search_radio`).
 - **Phase 4c — TV-WoL (R12, kein Debounce) + OQ-2 (ATV-Pre-Snapshot persistieren).** offen.
 
 ## Konstanten (§6, alle konfigurierbar)

@@ -205,6 +205,19 @@ RADIO_CATALOG: Final[dict[str, str]] = {
 RADIO_MEDIA_TYPE: Final[str] = "radio"
 RADIO_ENQUEUE: Final[str] = "replace"
 
+# Anzeige-Namen der Default-Sender (für Shortcuts im Cockpit). Kopie aus
+# sensor.media_radio_plan (station_name). Keys = RADIO_CATALOG-Keys.
+RADIO_STATION_LABELS: Final[dict[str, str]] = {
+    "1live": "1LIVE",
+    "wdr2_bergisches_land": "WDR 2 Bergisches Land",
+    "gayfm": "GAYFM",
+    "ndr1_niedersachsen": "NDR 1 Niedersachsen",
+    "wdr4": "WDR 4",
+    "jack_fm_berlin": "Jack FM Berlin",
+}
+# MA-Suche (Phase 4b — „andere Sender"). Default-Trefferzahl.
+DEFAULT_RADIO_SEARCH_LIMIT: Final[int] = 10
+
 # Phase 3 — Denon-Nachlauf (R13/R14), Sekunden (Lastenheft 20_helpers: 90s).
 CONF_DENON_NACHLAUF_PC: Final[str] = "denon_nachlauf_pc_seconds"
 CONF_DENON_NACHLAUF_TV: Final[str] = "denon_nachlauf_tv_seconds"
