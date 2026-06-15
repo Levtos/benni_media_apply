@@ -100,6 +100,7 @@ class MediaApplyCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self._ramp_active = False
         # R2/R3 — Debounce-Fenster + serialisierte Ausführung (latest-wins).
         self._debounce_unsub = None
+        self._debounce_deadline: Optional[float] = None   # loop.time(), für remaining_s
         self._pending_plan: Optional[logic.ApplyPlan] = None
         self._exec_lock = asyncio.Lock()
         self._apply_state = logic.ApplyState()
@@ -333,20 +334,28 @@ class MediaApplyCoordinator(DataUpdateCoordinator[dict[str, Any]]):
     @callback
     def _start_debounce(self) -> None:
         self._cancel_debounce()
-        self._debounce_unsub = async_call_later(
-            self.hass, self.settings().debounce_seconds, self._fire_debounce
-        )
+        window = self.settings().debounce_seconds
+        self._debounce_deadline = self.hass.loop.time() + window
+        self._debounce_unsub = async_call_later(self.hass, window, self._fire_debounce)
 
     @callback
     def _cancel_debounce(self) -> None:
         if self._debounce_unsub is not None:
             self._debounce_unsub()
             self._debounce_unsub = None
+        self._debounce_deadline = None
 
     @callback
     def _fire_debounce(self, _now) -> None:
         self._debounce_unsub = None
+        self._debounce_deadline = None
         self.hass.async_create_task(self._execute_serialized())
+
+    def _debounce_remaining(self) -> Optional[float]:
+        """Restzeit bis das Fenster feuert (Sekunden), None wenn kein Fenster läuft."""
+        if self._debounce_deadline is None:
+            return None
+        return round(max(0.0, self._debounce_deadline - self.hass.loop.time()), 2)
 
     async def _execute_serialized(self) -> None:
         """Serialisiert die Geräte-Schaltung (R3: Queue statt Race). Es läuft
@@ -403,6 +412,10 @@ class MediaApplyCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             "debounce": {
                 "window_s": s.debounce_seconds,
                 "pending": self._debounce_unsub is not None,
+                "remaining_s": self._debounce_remaining(),
+                # Der eine konsolidierte, noch nicht ausgeführte Plan (latest-wins,
+                # KEINE Stale-FIFO) — Cockpit zeigt damit „was als Nächstes käme".
+                "plan": self._pending_plan.as_dict() if self._pending_plan else None,
             },
             "plan": plan,
             "log": list(self._log),

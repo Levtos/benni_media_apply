@@ -66,9 +66,12 @@ Analyse-Stand 2026-06-11 (alter Layer: `einhornzentrale/packages/media/`):
   Ausführung serialisiert über `asyncio.Lock` (latest-wins statt Race, R3). Triviale
   Re-Evals (kein Soll≠Ist) stoßen das Fenster nicht neu an (`ApplyPlan.has_work`).
   Pure-Logic: `logic.execution_mode(plan)` (shadow/immediate/debounce). Cockpit
-  (FLEET-70): `status().debounce = {window_s, pending}` + `settings.debounce_seconds`.
-  6 neue pure-logic-Tests (51 grün gesamt). Timing bleibt Coordinator (HA), nur die
-  Klassifikation ist HA-frei getestet.
+  (FLEET-70): `status().debounce = {window_s, pending, remaining_s, plan}` (Restzeit
+  + der eine konsolidierte Pending-Plan, latest-wins statt Stale-FIFO) +
+  `settings.debounce_seconds` (v0.7.1). 6 neue pure-logic-Tests (51 grün gesamt).
+  Timing bleibt Coordinator (HA), nur die Klassifikation ist HA-frei getestet.
+  **Offen für FLEET-70:** Frontend rendert `remaining_s`/`plan` noch nicht
+  (Umbrella `benni_media` Apply-Tab) — WS-Contract liefert es bereits.
 - **Phase 4b — Radio-Katalog-Port + TV-WoL (R12, kein Debounce) + OQ-2.** offen.
 
 ## Konstanten (§6, alle konfigurierbar)
