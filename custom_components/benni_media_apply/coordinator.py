@@ -19,7 +19,7 @@ from typing import Any, Optional
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import Event, HomeAssistant, callback
-from homeassistant.helpers.event import async_track_state_change_event
+from homeassistant.helpers.event import async_call_later, async_track_state_change_event
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
 from homeassistant.util import dt as dt_util
 
@@ -34,6 +34,7 @@ from .const import (
     CONF_APPLY_ENABLED,
     CONF_AUDIO_OWNER,
     CONF_BIO_STATE,
+    CONF_DEBOUNCE_SECONDS,
     CONF_DENON_NACHLAUF_PC,
     CONF_DENON_NACHLAUF_TV,
     CONF_DENON_PLAYER,
@@ -58,6 +59,7 @@ from .const import (
     CONF_VOLUME_APPLY_ALLOWED,
     CONF_VOLUME_POLICY,
     DEFAULT_APPLY_ENABLED,
+    DEFAULT_DEBOUNCE_SECONDS,
     DEFAULT_DENON_NACHLAUF_PC,
     DEFAULT_DENON_NACHLAUF_TV,
     DEFAULT_DUCKED_LEVEL,
@@ -67,6 +69,9 @@ from .const import (
     DEFAULT_RAMP_STEPS,
     DEFAULT_TINY_DELTA,
     DOMAIN,
+    EXEC_DEBOUNCE,
+    EXEC_IMMEDIATE,
+    EXEC_SHADOW,
     PLAYER_OFF_VALUES,
     PROFILE_PREFILL,
     PROFILES,
@@ -93,6 +98,10 @@ class MediaApplyCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self._unsub_state = None
         self._ramp_task = None
         self._ramp_active = False
+        # R2/R3 — Debounce-Fenster + serialisierte Ausführung (latest-wins).
+        self._debounce_unsub = None
+        self._pending_plan: Optional[logic.ApplyPlan] = None
+        self._exec_lock = asyncio.Lock()
         self._apply_state = logic.ApplyState()
         self._nachlauf_state = logic.NachlaufState()
         self._nachlauf_tasks: dict[str, asyncio.Task] = {}
@@ -153,6 +162,7 @@ class MediaApplyCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             ramp_step_delay_s=_f(CONF_RAMP_STEP_DELAY, DEFAULT_RAMP_STEP_DELAY),
             tiny_delta=_f(CONF_TINY_DELTA, DEFAULT_TINY_DELTA),
             ducked_level=_f(CONF_DUCKED_LEVEL, DEFAULT_DUCKED_LEVEL),
+            debounce_seconds=_f(CONF_DEBOUNCE_SECONDS, DEFAULT_DEBOUNCE_SECONDS),
         )
 
     # ----- lifecycle -----
@@ -171,8 +181,9 @@ class MediaApplyCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
     @callback
     def async_shutdown_ramp(self) -> None:
-        """Unload-Hook: laufende Ramp- und Nachlauf-Tasks sauber abbrechen."""
+        """Unload-Hook: laufende Ramp-, Debounce- und Nachlauf-Tasks abbrechen."""
         self._cancel_ramp()
+        self._cancel_debounce()
         for key in list(self._nachlauf_tasks):
             self._cancel_nachlauf(key)
 
@@ -273,8 +284,9 @@ class MediaApplyCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         )
         self._last_debug = {**plan.as_dict(), "nachlauf": nplan.as_dict()}
         self._maybe_log(plan)
-        if plan.execute:
-            self.hass.async_create_task(self._execute(plan))
+        # R2/R3: Ausführung läuft über Debounce-Fenster + Serialisierung, Quiet
+        # bricht sofort durch. Preview/Status (oben) aktualisieren sich pro Event.
+        self._schedule_execute(plan)
         # Nachlauf-Flanken IMMER verarbeiten (Arm/Cancel-Buchwerk auch im Shadow,
         # für Observability); der reale Denon-Off ist in _run_nachlauf gegatet.
         if nplan.active:
@@ -293,6 +305,59 @@ class MediaApplyCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
     async def _async_update_data(self) -> dict[str, Any]:
         return self._compute()
+
+    # ----- R2/R3: Debounce + serialisierte Ausführung -----
+    @callback
+    def _schedule_execute(self, plan: "logic.ApplyPlan") -> None:
+        """Leitet einen Plan in die Ausführung (R2/R3). Quiet bricht sofort durch,
+        sonst sammelt ein Debounce-Fenster Trigger-Bursts zu EINER Aktion."""
+        mode = logic.execution_mode(plan)
+        if mode == EXEC_SHADOW:
+            # Apply (wieder) aus → kein Pending mehr ausführen.
+            self._cancel_debounce()
+            self._pending_plan = None
+            return
+        if mode == EXEC_IMMEDIATE:
+            # Quiet: laufendes Fenster verwerfen, sofort (serialisiert) ducken.
+            self._cancel_debounce()
+            self._pending_plan = plan
+            self.hass.async_create_task(self._execute_serialized())
+            return
+        # EXEC_DEBOUNCE — triviale Re-Evals dürfen ein laufendes Fenster nicht
+        # neu anstoßen (sonst hungert ein gepufferter echter Plan aus).
+        if not plan.has_work:
+            return
+        self._pending_plan = plan
+        self._start_debounce()
+
+    @callback
+    def _start_debounce(self) -> None:
+        self._cancel_debounce()
+        self._debounce_unsub = async_call_later(
+            self.hass, self.settings().debounce_seconds, self._fire_debounce
+        )
+
+    @callback
+    def _cancel_debounce(self) -> None:
+        if self._debounce_unsub is not None:
+            self._debounce_unsub()
+            self._debounce_unsub = None
+
+    @callback
+    def _fire_debounce(self, _now) -> None:
+        self._debounce_unsub = None
+        self.hass.async_create_task(self._execute_serialized())
+
+    async def _execute_serialized(self) -> None:
+        """Serialisiert die Geräte-Schaltung (R3: Queue statt Race). Es läuft
+        immer der zuletzt gepufferte Plan (idempotent → latest-wins); ein zweiter
+        wartender Task findet None vor und ist ein No-op."""
+        async with self._exec_lock:
+            plan = self._pending_plan
+            self._pending_plan = None
+            if plan is None:
+                return
+            await self._execute(plan)
 
     def _maybe_log(self, plan: "logic.ApplyPlan") -> None:
         """Apply-Log-Ringpuffer: jede nicht-triviale Plan-Änderung mit Timestamp +
@@ -335,6 +400,10 @@ class MediaApplyCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             "ramp_active": self._ramp_active,
             "ramp_step": self._ramp_step,
             "ramp_total": self._ramp_total,
+            "debounce": {
+                "window_s": s.debounce_seconds,
+                "pending": self._debounce_unsub is not None,
+            },
             "plan": plan,
             "log": list(self._log),
             "gates": {
@@ -372,6 +441,7 @@ class MediaApplyCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 "ramp_step_delay_s": s.ramp_step_delay_s,
                 "tiny_delta": s.tiny_delta,
                 "ducked_level": s.ducked_level,
+                "debounce_seconds": s.debounce_seconds,
             },
             "bindings": self.bindings(),
         }
@@ -380,6 +450,7 @@ class MediaApplyCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         return {
             **self._last_debug,
             "ramp_active": self._ramp_active,
+            "debounce_pending": self._debounce_unsub is not None,
             "nachlauf": {
                 "pc_armed": self._nachlauf_state.pc_armed,
                 "tv_armed": self._nachlauf_state.tv_armed,

@@ -60,6 +60,11 @@ ACTION_PAUSE: Final = "pause_homepods"
 ACTION_RESUME: Final = "resume_homepods"
 ACTION_START_RADIO: Final = "start_radio"
 
+# Ausführungs-Modus pro Tick (R2/R3): wie der berechnete Plan zum Gerät kommt.
+EXEC_SHADOW: Final = "shadow"        # apply_enabled aus → gar nicht ausführen.
+EXEC_IMMEDIATE: Final = "immediate"  # Quiet bricht sofort durch (kein Debounce).
+EXEC_DEBOUNCE: Final = "debounce"    # Normalfall → 5s-Fenster konsolidiert Bursts.
+
 # media_player-Zustände, die als "spielt" gelten.
 PLAYER_PLAYING_VALUES: Final = ("playing",)
 # Zustände, in denen ein Volume-Set sinnvoll ist (nicht unknown/unavailable/off).
@@ -161,6 +166,9 @@ CONF_RAMP_STEPS: Final[str] = "ramp_steps"
 CONF_RAMP_STEP_DELAY: Final[str] = "ramp_step_delay_seconds"
 CONF_TINY_DELTA: Final[str] = "tiny_delta"
 CONF_DUCKED_LEVEL: Final[str] = "ducked_level"
+# R2 — Debounce: Szenario-Übergänge warten dieses Fenster, Trigger-Bursts werden
+# zu EINER Aktion konsolidiert. Quiet bricht durch (kein Debounce). 5s kalibrierbar.
+CONF_DEBOUNCE_SECONDS: Final[str] = "debounce_seconds"
 # Service-Delegation für start_radio (Radio-Katalog bleibt vorerst YAML).
 CONF_RADIO_START_SCRIPT: Final[str] = "radio_start_script"
 
@@ -168,6 +176,7 @@ DEFAULT_RAMP_STEPS: Final[int] = 16
 DEFAULT_RAMP_STEP_DELAY: Final[float] = 1.0
 DEFAULT_TINY_DELTA: Final[float] = 0.02
 DEFAULT_DUCKED_LEVEL: Final[float] = 0.10
+DEFAULT_DEBOUNCE_SECONDS: Final[float] = 5.0
 DEFAULT_RADIO_START_SCRIPT: Final[str] = "script.media_radio_start"
 
 # Phase 3 — Denon-Nachlauf (R13/R14), Sekunden (Lastenheft 20_helpers: 90s).
@@ -181,6 +190,7 @@ RAMP_SETTING_DEFAULTS: Final[dict[str, Any]] = {
     CONF_RAMP_STEP_DELAY: DEFAULT_RAMP_STEP_DELAY,
     CONF_TINY_DELTA: DEFAULT_TINY_DELTA,
     CONF_DUCKED_LEVEL: DEFAULT_DUCKED_LEVEL,
+    CONF_DEBOUNCE_SECONDS: DEFAULT_DEBOUNCE_SECONDS,
 }
 
 # --------------------------------------------------------------------------- #

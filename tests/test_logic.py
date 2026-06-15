@@ -354,3 +354,40 @@ def test_plan_inactive_when_no_change():
     p, _ = L.decide_denon_nachlauf(_ninp(pc_power_on=True, denon_power_on=True))
     assert p.active is False
     assert p.as_dict() == {"pc": L.TIMER_NONE, "tv": L.TIMER_NONE, "reasons": []}
+
+
+# ----------------------------------------------- R2/R3 execution_mode + has_work
+def test_exec_mode_shadow_when_apply_disabled():
+    p = L.ApplyPlan(execute=False, homepods_levels=[0.4])
+    assert L.execution_mode(p) == C.EXEC_SHADOW
+
+
+def test_exec_mode_debounce_normal_case():
+    p = L.ApplyPlan(execute=True, homepods_levels=[0.4])
+    assert L.execution_mode(p) == C.EXEC_DEBOUNCE
+
+
+def test_exec_mode_immediate_when_quiet_breaks_through():
+    # R2/R3-Ausnahme: Quiet bricht sofort durch, kein Debounce.
+    p = L.ApplyPlan(execute=True, quiet_override=True, homepods_levels=[0.1])
+    assert L.execution_mode(p) == C.EXEC_IMMEDIATE
+
+
+def test_exec_mode_quiet_immediate_even_without_levels():
+    # Quiet ohne Volume-Änderung muss trotzdem sofort laufen (Ramp-Abbruch).
+    p = L.ApplyPlan(execute=True, quiet_override=True)
+    assert L.execution_mode(p) == C.EXEC_IMMEDIATE
+
+
+def test_has_work_true_for_each_actionable_field():
+    assert L.ApplyPlan(homepods_action=C.ACTION_PAUSE).has_work is True
+    assert L.ApplyPlan(homepods_levels=[0.3]).has_work is True
+    assert L.ApplyPlan(denon_set=0.2).has_work is True
+    assert L.ApplyPlan(subwoofer_set=False).has_work is True   # False ≠ None → Arbeit
+
+
+def test_has_work_false_for_trivial_plan():
+    # Reines Re-Eval ohne Soll≠Ist (auch quiet_override allein) ist keine Arbeit
+    # → darf ein laufendes Debounce-Fenster nicht neu anstoßen.
+    assert L.ApplyPlan().has_work is False
+    assert L.ApplyPlan(quiet_override=True).has_work is False
