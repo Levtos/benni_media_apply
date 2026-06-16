@@ -578,6 +578,30 @@ def test_wake_no_fire_without_trigger():
     assert p.reasons == []
 
 
+# --------------------------------------------- FLEET-79: Radio-Autostart-Gate
+def test_autostart_radio_ok_when_ready_idle():
+    assert L.should_autostart_radio(L.Inputs(
+        radio_ready=True, manual_playback=False, planned_station_playing=False)) is True
+
+
+def test_autostart_radio_blocked_when_not_ready():
+    assert L.should_autostart_radio(L.Inputs(
+        radio_ready=False, manual_playback=False, planned_station_playing=False)) is False
+    # radio_ready ungebunden (None) → ebenfalls blockt
+    assert L.should_autostart_radio(L.Inputs(
+        radio_ready=None, manual_playback=False, planned_station_playing=False)) is False
+
+
+def test_autostart_radio_blocked_during_manual():
+    assert L.should_autostart_radio(L.Inputs(
+        radio_ready=True, manual_playback=True, planned_station_playing=False)) is False
+
+
+def test_autostart_radio_blocked_when_planned_already_playing():
+    assert L.should_autostart_radio(L.Inputs(
+        radio_ready=True, manual_playback=False, planned_station_playing=True)) is False
+
+
 def test_radio_defaults_shape_and_sort():
     d = L.radio_defaults()
     assert len(d) == len(C.RADIO_CATALOG)

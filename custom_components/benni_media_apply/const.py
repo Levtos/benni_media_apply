@@ -106,6 +106,7 @@ CONF_STOP_LATCH: Final[str] = "stop_latch_entity"
 CONF_RADIO_STATION: Final[str] = "radio_station_entity"        # input_select (Sender-Key)
 CONF_RADIO_READY: Final[str] = "radio_ready_entity"            # binary_sensor (Sender gültig)
 CONF_MANUAL_PLAYBACK: Final[str] = "manual_playback_entity"    # binary_sensor (manuell aktiv)
+CONF_PLANNED_STATION_PLAYING: Final[str] = "planned_station_playing_entity"  # binary_sensor (geplante Station läuft)
 # Geräte (Apply-Targets):
 CONF_HOMEPODS_PLAYER: Final[str] = "homepods_player_entity"
 CONF_DENON_PLAYER: Final[str] = "denon_player_entity"
@@ -142,6 +143,7 @@ WATCH_KEYS: Final[tuple[str, ...]] = (
     CONF_SUBWOOFER_ALLOWED, CONF_VOLUME_APPLY_ALLOWED,
     CONF_QUIET_MODE, CONF_STOP_LATCH,
     CONF_RADIO_STATION, CONF_RADIO_READY, CONF_MANUAL_PLAYBACK,
+    CONF_PLANNED_STATION_PLAYING,
     CONF_HOMEPODS_PLAYER, CONF_DENON_PLAYER, CONF_SUBWOOFER_SWITCH,
     CONF_PC_POWER, CONF_TV_POWER, CONF_DENON_POWER, CONF_BIO_STATE,
     CONF_MEDIA_DEVICE, CONF_TV_PLAYER, CONF_SLEEP_TV_EXTEND,
@@ -169,6 +171,7 @@ PROFILE_PREFILL: Final[dict[str, dict[str, Any]]] = {
         CONF_RADIO_STATION: "input_select.media_radio_station",
         CONF_RADIO_READY: "binary_sensor.media_radio_ready",
         CONF_MANUAL_PLAYBACK: "binary_sensor.media_manual_playback_active",
+        CONF_PLANNED_STATION_PLAYING: "binary_sensor.media_radio_playing_planned_station",
         CONF_HOMEPODS_PLAYER: "media_player.living_homepods_ma_group",
         CONF_DENON_PLAYER: "media_player.living_denon",
         CONF_SUBWOOFER_SWITCH: "switch.living_subwoofer_plug",
@@ -232,6 +235,14 @@ RADIO_CATALOG: Final[dict[str, str]] = {
 }
 RADIO_MEDIA_TYPE: Final[str] = "radio"
 RADIO_ENQUEUE: Final[str] = "replace"
+
+# Radio-Autostart (FLEET-79, Port der disabled YAML-Automationen). Trigger A:
+# Wake-Flanke → Latch lösen + geplante Station starten. Trigger B: manuelle
+# Wiedergabe endet → nach Delay geplante Station fortsetzen.
+CONF_RADIO_AUTOSTART: Final[str] = "radio_autostart_enabled"
+CONF_RADIO_RESUME_DELAY: Final[str] = "radio_resume_delay_seconds"
+DEFAULT_RADIO_AUTOSTART: Final[bool] = True
+DEFAULT_RADIO_RESUME_DELAY: Final[float] = 10.0
 
 # Anzeige-Namen der Default-Sender (für Shortcuts im Cockpit). Kopie aus
 # sensor.media_radio_plan (station_name). Keys = RADIO_CATALOG-Keys.

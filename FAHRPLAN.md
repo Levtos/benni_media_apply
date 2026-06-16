@@ -120,6 +120,15 @@ Analyse-Stand 2026-06-11 (alter Layer: `einhornzentrale/packages/media/`):
   (bio + optionale Roh-Trigger) im Coordinator. Pure-Logic `decide_wake`, 4 Tests (79 grün).
   `status().wake`. (v0.12.0 hatte fälschlich Indikator-Doppel-Detektion → 0.12.1 korrigiert.)
 
+- **Radio-Autostart-Port ✅ (0.13.0, FLEET-79):** Port der seit Mai disabled YAML-
+  Automationen. **Trigger A** (Wake): auf die Wake-Flanke (bio→awake/waking) → Stop-Latch
+  lösen (`input_boolean.media_stop_latch` off) + geplante Station starten (`resolve_radio_uri`).
+  **Trigger B** (Resume): auf `manual_playback`-off-Flanke → nach `radio_resume_delay_seconds`
+  (10s) geplante Station fortsetzen. Gate `should_autostart_radio` (radio_ready True, kein
+  manual, geplante Station spielt nicht noch) + Option `radio_autostart_enabled` + apply-gated.
+  Neue Bindung `binary_sensor.media_radio_playing_planned_station`. 4 neue Tests (83 grün).
+  YAML-Automationen #2/#3 danach löschen (Freigabe vor Live-YAML-Delete).
+
 **FLEET-40 ist damit vollständig** (R1/R3/R4/R12–R15, Ramps, R20-Restore, R13/R14
 Denon-Nachlauf, R24 Sleep-TV-Off, Radio-Port, OQ-2). Bleibt nur der Go-Live (Apply
 scharf) nach Abschluss aller übrigen Media-Karten.

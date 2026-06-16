@@ -64,6 +64,7 @@ class Inputs:
     radio_station: Optional[str] = None
     radio_ready: Optional[bool] = None
     manual_playback: Optional[bool] = None
+    planned_station_playing: Optional[bool] = None   # FLEET-79 Autostart-Gate
     # aktueller Geräte-Zustand (Ist, für Idempotenz):
     homepods_configured: bool = False
     homepods_state: Optional[str] = None
@@ -196,6 +197,19 @@ def resolve_radio_uri(station: Optional[str]) -> Optional[str]:
     if not station:
         return None
     return RADIO_CATALOG.get(station)
+
+
+def should_autostart_radio(inp: "Inputs") -> bool:
+    """FLEET-79: Gate für den Radio-Autostart (Wake / Resume). Nur wenn ein gültiger
+    Sender bereit ist (`radio_ready` True), KEINE manuelle Wiedergabe läuft und die
+    geplante Station NICHT eh schon spielt. Der Trigger (Wake-Flanke / manual-off-
+    Flanke) sowie das Latch-Lösen liegen im Coordinator. None (ungebunden) = blockt
+    (radio_ready muss explizit True sein → kein Autostart ohne validen Sender)."""
+    return (
+        inp.radio_ready is True
+        and inp.manual_playback is not True
+        and inp.planned_station_playing is not True
+    )
 
 
 def radio_defaults() -> list[dict[str, str]]:
