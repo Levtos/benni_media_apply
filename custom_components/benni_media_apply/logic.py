@@ -411,6 +411,10 @@ class NachlaufState:
     pc_armed: bool = False
     tv_armed: bool = False
     tv_paused: bool = False   # R14: während Sleep pausiert (nicht abgebrochen)
+    # FLEET-80: Vortick-Power für KANTEN-getriggertes Armen (sonst Dauer-Loop:
+    # PC/TV im Steady-State aus → arm → 90s → Denon aus → re-arm …). None = unbekannt.
+    last_pc_on: Optional[bool] = None
+    last_tv_on: Optional[bool] = None
 
 
 @dataclass
@@ -447,46 +451,55 @@ def decide_denon_nachlauf(
         state = NachlaufState()
     p = NachlaufPlan()
     ns = NachlaufState(
-        pc_armed=state.pc_armed, tv_armed=state.tv_armed, tv_paused=state.tv_paused
+        pc_armed=state.pc_armed, tv_armed=state.tv_armed, tv_paused=state.tv_paused,
+        last_pc_on=state.last_pc_on, last_tv_on=state.last_tv_on,
     )
     reasons: list[str] = []
     denon_on = inp.denon_power_on is True
 
-    # ----- R13: PC-Aus -----
-    pc_cond = inp.pc_power_on is False and denon_on
-    if pc_cond and not ns.pc_armed:
+    # ----- R13: PC-Aus (KANTEN-getriggert, FLEET-80) -----
+    # Armen NUR auf der Fallflanke PC an→aus bei laufendem Denon. Steady-State
+    # „PC aus" (Normalfall beim TV-Schauen) darf NICHT (re-)armen → kein 90s-Loop.
+    pc_off_edge = state.last_pc_on is True and inp.pc_power_on is False
+    pc_hold = inp.pc_power_on is False and denon_on   # hält den laufenden Timer
+    if pc_off_edge and denon_on and not ns.pc_armed:
         p.pc = TIMER_ARM
         ns.pc_armed = True
         reasons.append("r13:arm_pc")
-    elif not pc_cond and ns.pc_armed:
+    elif ns.pc_armed and not pc_hold:
+        # PC zurück ODER Denon aus → Timer abbrechen.
         p.pc = TIMER_CANCEL
         ns.pc_armed = False
         reasons.append("r13:cancel_pc")
 
-    # ----- R14: TV-Aus (Sleep pausiert) -----
-    tv_cond = inp.tv_power_on is False and denon_on
+    # ----- R14: TV-Aus (Sleep pausiert; KANTEN-getriggert) -----
+    tv_off_edge = state.last_tv_on is True and inp.tv_power_on is False
+    tv_hold = inp.tv_power_on is False and denon_on
     if inp.bio_sleep is True:
         if ns.tv_armed and not ns.tv_paused:
             p.tv = TIMER_PAUSE
             ns.tv_paused = True
             reasons.append("r14:pause_sleep")
     else:
-        if tv_cond and not ns.tv_armed:
+        if tv_off_edge and denon_on and not ns.tv_armed:
             p.tv = TIMER_ARM
             ns.tv_armed = True
             ns.tv_paused = False
             reasons.append("r14:arm_tv")
-        elif tv_cond and ns.tv_armed and ns.tv_paused:
-            # Sleep-Ende, Bedingung hält → neu starten (90s; kein Rest-Resume).
+        elif ns.tv_armed and ns.tv_paused and tv_hold:
+            # Sleep-Ende, Bedingung hält → Timer neu starten (Resume, keine Flanke nötig).
             p.tv = TIMER_ARM
             ns.tv_paused = False
             reasons.append("r14:resume_tv")
-        elif not tv_cond and ns.tv_armed:
+        elif ns.tv_armed and not tv_hold:
             p.tv = TIMER_CANCEL
             ns.tv_armed = False
             ns.tv_paused = False
             reasons.append("r14:cancel_tv")
 
+    # Vortick-Power fortschreiben (Flankenerkennung im nächsten Tick).
+    ns.last_pc_on = inp.pc_power_on
+    ns.last_tv_on = inp.tv_power_on
     p.reasons = reasons
     return p, ns
 
