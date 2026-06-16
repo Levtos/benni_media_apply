@@ -254,7 +254,7 @@ CONF_SLEEP_TV_NOTIFY: Final[str] = "sleep_tv_notify_service"   # z.B. "notify.li
 CONF_SLEEP_TV_WARN_MESSAGE: Final[str] = "sleep_tv_warn_message"
 DEFAULT_SLEEP_TV_OFF_DELAY: Final[float] = 2700.0   # 45 min (Lastenheft R24)
 DEFAULT_SLEEP_TV_WARN_LEAD: Final[float] = 60.0     # Warnung 1 min vor Aus
-DEFAULT_SLEEP_TV_NOTIFY: Final[str] = ""            # leer = keine Warnung senden
+DEFAULT_SLEEP_TV_NOTIFY: Final[str] = "notify.lg_webos_tv_oled77c47la_deuqdjp"  # benni-TV; leer = keine Warnung
 DEFAULT_SLEEP_TV_WARN_MESSAGE: Final[str] = (
     "Sleep-Modus wird in 1 Minute aktiv, TV wird ausgeschaltet."
 )
