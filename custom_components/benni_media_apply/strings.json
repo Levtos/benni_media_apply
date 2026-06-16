@@ -24,6 +24,8 @@
           "radio_station_entity": "Radio · Sender (input_select)",
           "radio_ready_entity": "Radio · Ready (binary_sensor)",
           "manual_playback_entity": "Radio · Manuelle Wiedergabe aktiv (binary_sensor)",
+          "media_device_entity": "media_state · Aktives Output-Gerät (R12 Bildschirm-Szenario)",
+          "tv_player_entity": "TV · webOS Media-Player (turn_on + On/Off-State)",
           "homepods_player_entity": "HomePods · Media-Player (MA-Gruppe)",
           "denon_player_entity": "Denon · Media-Player",
           "subwoofer_switch_entity": "Subwoofer · Plug (switch)"
@@ -40,7 +42,8 @@
           "ducked_level": "Ducked-Level (Quiet)",
           "debounce_seconds": "Debounce-Fenster (s, 0 = sofort; Quiet bricht durch)",
           "radio_start_script": "Radio-Start-Script (Fallback, wenn kein URI auflösbar)",
-          "radio_play_delay_seconds": "Radio: Pause play_media → media_play (s)"
+          "radio_play_delay_seconds": "Radio: Pause play_media → media_play (s)",
+          "tv_wol_mac": "TV-WoL MAC (leer = nur turn_on / webOS-Leuchtfeuer)"
         }
       }
     },
@@ -71,6 +74,8 @@
           "radio_station_entity": "Radio · Sender (input_select)",
           "radio_ready_entity": "Radio · Ready (binary_sensor)",
           "manual_playback_entity": "Radio · Manuelle Wiedergabe aktiv (binary_sensor)",
+          "media_device_entity": "media_state · Aktives Output-Gerät (R12 Bildschirm-Szenario)",
+          "tv_player_entity": "TV · webOS Media-Player (turn_on + On/Off-State)",
           "homepods_player_entity": "HomePods · Media-Player (MA-Gruppe)",
           "denon_player_entity": "Denon · Media-Player",
           "subwoofer_switch_entity": "Subwoofer · Plug (switch)"
@@ -86,7 +91,8 @@
           "ducked_level": "Ducked-Level (Quiet)",
           "debounce_seconds": "Debounce-Fenster (s, 0 = sofort; Quiet bricht durch)",
           "radio_start_script": "Radio-Start-Script (Fallback, wenn kein URI auflösbar)",
-          "radio_play_delay_seconds": "Radio: Pause play_media → media_play (s)"
+          "radio_play_delay_seconds": "Radio: Pause play_media → media_play (s)",
+          "tv_wol_mac": "TV-WoL MAC (leer = nur turn_on / webOS-Leuchtfeuer)"
         }
       }
     }
