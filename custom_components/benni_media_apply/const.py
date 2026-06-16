@@ -80,6 +80,10 @@ SCREEN_DEVICES: Final = ("tv", "appletv")
 
 # Bio-State (core_state), bei dem R14 pausiert (Sleep dominant).
 BIO_SLEEP_VALUE: Final = "sleep"
+# R23 — Wake-Übergang: bio_state-Werte, die als „wach" gelten. Der Eintritt in
+# diese Menge (aus einem Nicht-Wach-Zustand) ist der primäre Wake-Trigger — Quelle
+# ist core_state (KEINE Doppel-Detektion der Indikatoren). `waking` wie `awake` (KH-4).
+BIO_AWAKE_VALUES: Final = ("awake", "waking")
 
 # --------------------------------------------------------------------------- #
 # Config-Keys — Eingänge (via Entity-State).
@@ -180,12 +184,10 @@ PROFILE_PREFILL: Final[dict[str, dict[str, Any]]] = {
         # R12 — TV-WoL.
         CONF_MEDIA_DEVICE: "sensor.benni_media_state_media_device",
         CONF_TV_PLAYER: "media_player.living_lgtv",
-        # R23 — Wake-Trigger (sichere Defaults; PS5/Fenster/Private nach Bedarf
-        # ergänzen). Multi-Entity, steigende Flanke startet die Wake-Sequenz.
-        CONF_WAKE_TRIGGERS: [
-            "sensor.benni_device_kitchen_coffee",
-            "sensor.benni_device_living_pc",
-        ],
+        # R23 — Primärer Wake-Trigger ist der bio_state-Übergang → awake/waking
+        # (CONF_BIO_STATE, core_state). Diese Liste ist nur ein OPTIONALer Zusatz
+        # (z.B. Private-Time-Helper), Default leer → keine Indikator-Doppel-Detektion.
+        CONF_WAKE_TRIGGERS: [],
     },
     PROFILE_ELTERN: {},
 }

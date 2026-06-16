@@ -30,6 +30,7 @@ from .const import (
     ACTION_PAUSE,
     ACTION_RESUME,
     ACTION_START_RADIO,
+    BIO_AWAKE_VALUES,
     BIO_SLEEP_VALUE,
     CONF_ACTION,
     CONF_APPLY_ENABLED,
@@ -139,6 +140,7 @@ class MediaApplyCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self._last_extend_state: str | None = None
         self._wake_task: Optional[asyncio.Task] = None
         self._last_wake_states: dict[str, bool] = {}
+        self._last_bio_state: str | None = None
         self._nachlauf_tasks: dict[str, asyncio.Task] = {}
         self._last_debug: dict[str, Any] = {}
         # Observability (FLEET-46): Ramp-Fortschritt + Apply-Log-Ringpuffer.
@@ -539,7 +541,8 @@ class MediaApplyCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             },
             "wake": {
                 "running": self._wake_task is not None and not self._wake_task.done(),
-                "triggers": self._entity_id(CONF_WAKE_TRIGGERS),
+                "bio_state": self._state(CONF_BIO_STATE),   # primäre Quelle (core_state)
+                "extra_triggers": self._entity_id(CONF_WAKE_TRIGGERS),
                 "start_volume": s.wake_start_volume,
                 "debounce_s": s.wake_debounce_seconds,
                 "bio_sleep": inp.bio_sleep,
@@ -695,25 +698,37 @@ class MediaApplyCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         _LOGGER.info("media_apply: R12 TV-WoL → turn_on %s (mac=%s)", tv, mac or "—")
 
     # ----- Wake-Sequenz (R23) -----
+    def _wake_bio_edge(self) -> bool:
+        """Primärer Wake-Trigger (R23): bio_state-Eintritt in awake/waking aus einem
+        Nicht-Wach-Zustand. Quelle = core_state (keine Doppel-Detektion). Nur EINMAL
+        pro Tick (mutiert Vortick-State); Erststand zählt nicht als Übergang."""
+        cur = self._state(CONF_BIO_STATE)
+        prev = self._last_bio_state
+        self._last_bio_state = cur
+        return (
+            prev is not None
+            and prev not in BIO_AWAKE_VALUES
+            and cur in BIO_AWAKE_VALUES
+        )
+
     def _wake_trigger_fired(self) -> bool:
-        """Steigende Flanke EINES Wake-Triggers (Multi-Entity). Nur EINMAL pro Tick
-        aufrufen (mutiert die Vortick-States). Erststand zählt nicht als Flanke
-        (kein Wake beim Boot, wenn ein Trigger schon an ist)."""
+        """Wake-Flanke = bio_state-Übergang (primär) ODER steigende Flanke eines
+        optionalen Roh-Triggers (Multi-Entity, Default leer). Nur EINMAL pro Tick
+        aufrufen (mutiert Vortick-States)."""
+        fired = self._wake_bio_edge()
         ents = self._entity_id(CONF_WAKE_TRIGGERS)
         if isinstance(ents, str):
             ents = [ents]
-        if not isinstance(ents, (list, tuple)):
-            return False
-        fired = False
-        for eid in ents:
-            if not isinstance(eid, str) or not eid:
-                continue
-            st = self.hass.states.get(eid)
-            raw = st.state if st and st.state not in ("unknown", "unavailable") else None
-            cur = _bool(raw)
-            if self._last_wake_states.get(eid) is False and cur is True:
-                fired = True
-            self._last_wake_states[eid] = cur
+        if isinstance(ents, (list, tuple)):
+            for eid in ents:
+                if not isinstance(eid, str) or not eid:
+                    continue
+                st = self.hass.states.get(eid)
+                raw = st.state if st and st.state not in ("unknown", "unavailable") else None
+                cur = _bool(raw)
+                if self._last_wake_states.get(eid) is False and cur is True:
+                    fired = True
+                self._last_wake_states[eid] = cur
         return fired
 
     @callback
