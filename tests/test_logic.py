@@ -501,6 +501,58 @@ def test_tv_wol_webos_priority_over_wattage():
     assert p.fire is False
 
 
+# ------------------------------------------------- Phase 3b: Sleep-TV-Off (R24)
+def _stv(**kw):
+    base = dict(bio_sleep=None, tv_player_state=None, tv_power_on=None,
+               sleep_tv_extend_pressed=False)
+    base.update(kw)
+    return L.Inputs(**base)
+
+
+def test_sleep_tv_arms_when_sleep_and_tv_on():
+    p, s = L.decide_sleep_tv(_stv(bio_sleep=True, tv_player_state="playing"))
+    assert p.intent == L.TIMER_ARM
+    assert s.armed is True
+
+
+def test_sleep_tv_no_arm_when_tv_off():
+    p, s = L.decide_sleep_tv(_stv(bio_sleep=True, tv_player_state="off"))
+    assert p.intent == L.TIMER_NONE
+    assert s.armed is False
+
+
+def test_sleep_tv_no_arm_when_not_sleep():
+    p, _ = L.decide_sleep_tv(_stv(bio_sleep=False, tv_player_state="playing"))
+    assert p.intent == L.TIMER_NONE
+
+
+def test_sleep_tv_no_arm_on_unknown_tv():
+    p, _ = L.decide_sleep_tv(_stv(bio_sleep=True, tv_player_state=None, tv_power_on=None))
+    assert p.intent == L.TIMER_NONE
+
+
+def test_sleep_tv_extend_when_armed_and_pressed():
+    s = L.SleepTvState(armed=True)
+    p, ns = L.decide_sleep_tv(
+        _stv(bio_sleep=True, tv_player_state="playing", sleep_tv_extend_pressed=True), s)
+    assert p.intent == L.TIMER_EXTEND
+    assert ns.armed is True
+
+
+def test_sleep_tv_cancel_when_sleep_ends():
+    s = L.SleepTvState(armed=True)
+    p, ns = L.decide_sleep_tv(_stv(bio_sleep=False, tv_player_state="playing"), s)
+    assert p.intent == L.TIMER_CANCEL
+    assert ns.armed is False
+
+
+def test_sleep_tv_cancel_when_tv_off():
+    s = L.SleepTvState(armed=True)
+    p, ns = L.decide_sleep_tv(_stv(bio_sleep=True, tv_player_state="off"), s)
+    assert p.intent == L.TIMER_CANCEL
+    assert ns.armed is False
+
+
 def test_radio_defaults_shape_and_sort():
     d = L.radio_defaults()
     assert len(d) == len(C.RADIO_CATALOG)

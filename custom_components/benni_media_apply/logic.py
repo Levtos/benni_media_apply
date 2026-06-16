@@ -80,6 +80,8 @@ class Inputs:
     # tv_player_state = WebOS-State (R11 primär). None = ungebunden/unbekannt.
     media_device: Optional[str] = None
     tv_player_state: Optional[str] = None
+    # Phase 3b (R24 Sleep-TV-Off). Flanke vom Coordinator (Lichtschalter-Druck).
+    sleep_tv_extend_pressed: bool = False
 
 
 @dataclass(frozen=True)
@@ -526,6 +528,61 @@ def decide_tv_wol(
         ns.fired = True
         reasons.append("r12:tv_on")
     # screen & tv_off is None → unbekannt, nichts tun (fail-safe).
+
+    p.reasons = reasons
+    return p, ns
+
+
+# --------------------------------------------------------------------------- #
+# Phase 3b — Sleep-TV-Off (R24): Sleep + TV läuft → 45 min → Warnung → TV aus
+# --------------------------------------------------------------------------- #
+@dataclass
+class SleepTvState:
+    """Edge-Buchwerk des Sleep-TV-Off-Timers (RAM/Coordinator-Ticks)."""
+
+    armed: bool = False
+
+
+@dataclass
+class SleepTvPlan:
+    """Flanken-Intent (ARM/CANCEL/EXTEND/NONE) — der Coordinator besitzt den Timer."""
+
+    intent: str = TIMER_NONE
+    reasons: list = field(default_factory=list)
+
+    def as_dict(self) -> dict[str, Any]:
+        return {"intent": self.intent, "reasons": list(self.reasons)}
+
+
+TIMER_EXTEND: Final = "extend"
+
+
+def decide_sleep_tv(
+    inp: "Inputs", state: Optional[SleepTvState] = None
+) -> tuple[SleepTvPlan, SleepTvState]:
+    """R24: Bio-State=sleep + TV läuft → Timer arm (Coordinator: 45 min → Warnung
+    → TV aus). Lichtschalter-Druck verlängert (EXTEND). Sleep-Ende oder TV aus →
+    CANCEL. TV-Zustand unbekannt (None) armt nicht (fail-safe)."""
+    if state is None:
+        state = SleepTvState()
+    p = SleepTvPlan()
+    ns = SleepTvState(armed=state.armed)
+    reasons: list[str] = []
+
+    tv_off = _tv_is_off(inp)
+    cond = inp.bio_sleep is True and tv_off is False   # Sleep aktiv UND TV an
+
+    if cond and not ns.armed:
+        p.intent = TIMER_ARM
+        ns.armed = True
+        reasons.append("r24:arm")
+    elif cond and ns.armed and inp.sleep_tv_extend_pressed:
+        p.intent = TIMER_EXTEND
+        reasons.append("r24:extend")
+    elif not cond and ns.armed:
+        p.intent = TIMER_CANCEL
+        ns.armed = False
+        reasons.append("r24:cancel")
 
     p.reasons = reasons
     return p, ns

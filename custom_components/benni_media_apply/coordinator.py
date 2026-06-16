@@ -15,6 +15,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections import deque
+from dataclasses import replace
 from typing import Any, Optional
 
 from homeassistant.config_entries import ConfigEntry
@@ -48,6 +49,11 @@ from .const import (
     CONF_PC_POWER,
     CONF_PROFILE,
     CONF_QUIET_MODE,
+    CONF_SLEEP_TV_EXTEND,
+    CONF_SLEEP_TV_NOTIFY,
+    CONF_SLEEP_TV_OFF_DELAY,
+    CONF_SLEEP_TV_WARN_LEAD,
+    CONF_SLEEP_TV_WARN_MESSAGE,
     CONF_RADIO_PLAY_DELAY,
     CONF_RADIO_READY,
     CONF_RADIO_START_SCRIPT,
@@ -74,6 +80,10 @@ from .const import (
     DEFAULT_RADIO_PLAY_DELAY,
     DEFAULT_RADIO_SEARCH_LIMIT,
     DEFAULT_RADIO_START_SCRIPT,
+    DEFAULT_SLEEP_TV_NOTIFY,
+    DEFAULT_SLEEP_TV_OFF_DELAY,
+    DEFAULT_SLEEP_TV_WARN_LEAD,
+    DEFAULT_SLEEP_TV_WARN_MESSAGE,
     DEFAULT_TV_WOL_MAC,
     DEFAULT_RAMP_STEP_DELAY,
     DEFAULT_RAMP_STEPS,
@@ -119,6 +129,9 @@ class MediaApplyCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self._apply_state = logic.ApplyState()
         self._nachlauf_state = logic.NachlaufState()
         self._tv_wol_state = logic.TvWolState()
+        self._sleep_tv_state = logic.SleepTvState()
+        self._sleep_tv_task: Optional[asyncio.Task] = None
+        self._last_extend_state: str | None = None
         self._nachlauf_tasks: dict[str, asyncio.Task] = {}
         self._last_debug: dict[str, Any] = {}
         # Observability (FLEET-46): Ramp-Fortschritt + Apply-Log-Ringpuffer.
@@ -199,6 +212,7 @@ class MediaApplyCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         """Unload-Hook: laufende Ramp-, Debounce- und Nachlauf-Tasks abbrechen."""
         self._cancel_ramp()
         self._cancel_debounce()
+        self._cancel_sleep_tv()
         for key in list(self._nachlauf_tasks):
             self._cancel_nachlauf(key)
 
@@ -304,8 +318,11 @@ class MediaApplyCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             inputs, self._nachlauf_state
         )
         twol, self._tv_wol_state = logic.decide_tv_wol(inputs, self._tv_wol_state)
+        stv_inp = replace(inputs, sleep_tv_extend_pressed=self._consume_extend_edge())
+        splan, self._sleep_tv_state = logic.decide_sleep_tv(stv_inp, self._sleep_tv_state)
         self._last_debug = {
-            **plan.as_dict(), "nachlauf": nplan.as_dict(), "tv_wol": twol.as_dict(),
+            **plan.as_dict(), "nachlauf": nplan.as_dict(),
+            "tv_wol": twol.as_dict(), "sleep_tv": splan.as_dict(),
         }
         self._maybe_log(plan)
         # R2/R3: Ausführung läuft über Debounce-Fenster + Serialisierung, Quiet
@@ -318,6 +335,12 @@ class MediaApplyCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         # R12 TV-WoL: SOFORT (kein Debounce), aber apply-gated (automatische Aktion).
         if twol.fire and self.apply_enabled:
             self.hass.async_create_task(self._execute_tv_wol())
+        # R24 Sleep-TV-Off: Timer-Flanken IMMER verarbeiten (Arm/Cancel-Buchwerk
+        # auch im Shadow, für Observability); der reale TV-Off ist gegatet.
+        if splan.intent in (logic.TIMER_ARM, logic.TIMER_EXTEND):
+            self._schedule_sleep_tv()
+        elif splan.intent == logic.TIMER_CANCEL:
+            self._cancel_sleep_tv()
         return {
             "last_action": plan.homepods_action,
             "homepods_target": plan.homepods_levels[-1] if plan.homepods_levels else None,
@@ -483,6 +506,16 @@ class MediaApplyCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 "screen_devices": list(SCREEN_DEVICES),
                 "mac": str(self._opts.get(CONF_TV_WOL_MAC, DEFAULT_TV_WOL_MAC) or "") or None,
             },
+            "sleep_tv": {
+                "armed": self._sleep_tv_state.armed,
+                "running": self._sleep_tv_task is not None and not self._sleep_tv_task.done(),
+                "bio_sleep": inp.bio_sleep,
+                "tv_player_state": inp.tv_player_state,
+                "delay_s": self._duration(CONF_SLEEP_TV_OFF_DELAY, DEFAULT_SLEEP_TV_OFF_DELAY),
+                "warn_lead_s": self._duration(CONF_SLEEP_TV_WARN_LEAD, DEFAULT_SLEEP_TV_WARN_LEAD),
+                "notify": str(self._opts.get(CONF_SLEEP_TV_NOTIFY, DEFAULT_SLEEP_TV_NOTIFY) or "") or None,
+                "extend_bound": bool(self._entity_id(CONF_SLEEP_TV_EXTEND)),
+            },
             "settings": {
                 "ramp_steps": s.ramp_steps,
                 "ramp_step_delay_s": s.ramp_step_delay_s,
@@ -630,6 +663,63 @@ class MediaApplyCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         if mac:
             await self._svc("wake_on_lan", "send_magic_packet", {"mac": mac})
         _LOGGER.info("media_apply: R12 TV-WoL → turn_on %s (mac=%s)", tv, mac or "—")
+
+    # ----- Sleep-TV-Off (R24) -----
+    def _consume_extend_edge(self) -> bool:
+        """Flanke: hat sich der Lichtschalter-Taster-State seit dem letzten Tick
+        geändert? (Druck = State-Change). Nur EINMAL pro Tick aufrufen (mutiert)."""
+        cur = self._state(CONF_SLEEP_TV_EXTEND)
+        pressed = (
+            self._last_extend_state is not None
+            and cur is not None
+            and cur != self._last_extend_state
+        )
+        self._last_extend_state = cur
+        return pressed
+
+    @callback
+    def _schedule_sleep_tv(self) -> None:
+        self._cancel_sleep_tv()
+        self._sleep_tv_task = self.hass.async_create_task(self._run_sleep_tv())
+
+    @callback
+    def _cancel_sleep_tv(self) -> None:
+        if self._sleep_tv_task is not None and not self._sleep_tv_task.done():
+            self._sleep_tv_task.cancel()
+        self._sleep_tv_task = None
+
+    async def _run_sleep_tv(self) -> None:
+        """R24: nach delay − warn_lead die Warnung, dann warn_lead später den TV aus
+        (beides apply-gated). Extend startet den Task neu (voller delay); Cancel
+        bricht ab. Abbrechbar via asyncio.CancelledError."""
+        delay = self._duration(CONF_SLEEP_TV_OFF_DELAY, DEFAULT_SLEEP_TV_OFF_DELAY)
+        lead = min(self._duration(CONF_SLEEP_TV_WARN_LEAD, DEFAULT_SLEEP_TV_WARN_LEAD), delay)
+        try:
+            await asyncio.sleep(max(0.0, delay - lead))
+            if self.apply_enabled:
+                await self._sleep_tv_warn()
+            await asyncio.sleep(max(0.0, lead))
+        except asyncio.CancelledError:
+            raise
+        self._sleep_tv_task = None
+        self._sleep_tv_state.armed = False
+        if self.apply_enabled:
+            tv = self._entity_id(CONF_TV_PLAYER)
+            if tv:
+                _LOGGER.info("media_apply: R24 Sleep-TV-Off abgelaufen → turn_off %s", tv)
+                await self._svc("media_player", "turn_off", {"entity_id": tv})
+        else:
+            _LOGGER.debug("media_apply: R24 Sleep-TV-Off abgelaufen (Shadow → kein Off)")
+
+    async def _sleep_tv_warn(self) -> None:
+        """TV-Warnung via konfiguriertem notify-Service (z.B. notify.living_lgtv).
+        Leer/ohne Punkt → keine Warnung (degraded, schaltet trotzdem aus)."""
+        svc = str(self._opts.get(CONF_SLEEP_TV_NOTIFY, DEFAULT_SLEEP_TV_NOTIFY) or "").strip()
+        if "." not in svc:
+            return
+        domain, service = svc.split(".", 1)
+        msg = self._opts.get(CONF_SLEEP_TV_WARN_MESSAGE) or DEFAULT_SLEEP_TV_WARN_MESSAGE
+        await self._svc(domain, service, {"message": msg})
 
     # ----- Denon-Nachlauf (R13/R14) -----
     def _duration(self, key: str, default: float) -> float:
