@@ -44,6 +44,7 @@ from .const import (
     CONF_HOMEPODS_RESUME_ALLOWED,
     CONF_HOMEPODS_SHOULD_PAUSE,
     CONF_MANUAL_PLAYBACK,
+    CONF_MEDIA_DEVICE,
     CONF_PC_POWER,
     CONF_PROFILE,
     CONF_QUIET_MODE,
@@ -57,7 +58,9 @@ from .const import (
     CONF_SUBWOOFER_ALLOWED,
     CONF_SUBWOOFER_SWITCH,
     CONF_TINY_DELTA,
+    CONF_TV_PLAYER,
     CONF_TV_POWER,
+    CONF_TV_WOL_MAC,
     CONF_VOL_TARGET_DENON,
     CONF_VOL_TARGET_HOMEPODS,
     CONF_VOLUME_APPLY_ALLOWED,
@@ -71,6 +74,7 @@ from .const import (
     DEFAULT_RADIO_PLAY_DELAY,
     DEFAULT_RADIO_SEARCH_LIMIT,
     DEFAULT_RADIO_START_SCRIPT,
+    DEFAULT_TV_WOL_MAC,
     DEFAULT_RAMP_STEP_DELAY,
     DEFAULT_RAMP_STEPS,
     DEFAULT_TINY_DELTA,
@@ -81,6 +85,7 @@ from .const import (
     PLAYER_OFF_VALUES,
     RADIO_ENQUEUE,
     RADIO_MEDIA_TYPE,
+    SCREEN_DEVICES,
     PROFILE_PREFILL,
     PROFILES,
     WATCH_KEYS,
@@ -113,6 +118,7 @@ class MediaApplyCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self._exec_lock = asyncio.Lock()
         self._apply_state = logic.ApplyState()
         self._nachlauf_state = logic.NachlaufState()
+        self._tv_wol_state = logic.TvWolState()
         self._nachlauf_tasks: dict[str, asyncio.Task] = {}
         self._last_debug: dict[str, Any] = {}
         # Observability (FLEET-46): Ramp-Fortschritt + Apply-Log-Ringpuffer.
@@ -284,6 +290,9 @@ class MediaApplyCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             tv_power_on=self._tri_bool(CONF_TV_POWER),
             denon_power_on=self._denon_power_on(),
             bio_sleep=self._bio_sleep(),
+            # Phase 4c (R12 TV-WoL).
+            media_device=self._state(CONF_MEDIA_DEVICE),
+            tv_player_state=self._state(CONF_TV_PLAYER),
         )
 
     def _compute(self) -> dict[str, Any]:
@@ -294,7 +303,10 @@ class MediaApplyCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         nplan, self._nachlauf_state = logic.decide_denon_nachlauf(
             inputs, self._nachlauf_state
         )
-        self._last_debug = {**plan.as_dict(), "nachlauf": nplan.as_dict()}
+        twol, self._tv_wol_state = logic.decide_tv_wol(inputs, self._tv_wol_state)
+        self._last_debug = {
+            **plan.as_dict(), "nachlauf": nplan.as_dict(), "tv_wol": twol.as_dict(),
+        }
         self._maybe_log(plan)
         # R2/R3: Ausführung läuft über Debounce-Fenster + Serialisierung, Quiet
         # bricht sofort durch. Preview/Status (oben) aktualisieren sich pro Event.
@@ -303,6 +315,9 @@ class MediaApplyCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         # für Observability); der reale Denon-Off ist in _run_nachlauf gegatet.
         if nplan.active:
             self._apply_nachlauf(nplan)
+        # R12 TV-WoL: SOFORT (kein Debounce), aber apply-gated (automatische Aktion).
+        if twol.fire and self.apply_enabled:
+            self.hass.async_create_task(self._execute_tv_wol())
         return {
             "last_action": plan.homepods_action,
             "homepods_target": plan.homepods_levels[-1] if plan.homepods_levels else None,
@@ -460,6 +475,14 @@ class MediaApplyCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 "bio_sleep": inp.bio_sleep,
                 "tasks": sorted(self._nachlauf_tasks),
             },
+            "tv_wol": {
+                "fired": self._tv_wol_state.fired,
+                "media_device": inp.media_device,
+                "tv_player_state": inp.tv_player_state,
+                "is_screen": inp.media_device in SCREEN_DEVICES,
+                "screen_devices": list(SCREEN_DEVICES),
+                "mac": str(self._opts.get(CONF_TV_WOL_MAC, DEFAULT_TV_WOL_MAC) or "") or None,
+            },
             "settings": {
                 "ramp_steps": s.ramp_steps,
                 "ramp_step_delay_s": s.ramp_step_delay_s,
@@ -595,6 +618,18 @@ class MediaApplyCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         except asyncio.CancelledError:
             raise
         await self._svc("media_player", "media_play", {"entity_id": entity_id})
+
+    async def _execute_tv_wol(self) -> None:
+        """R12: TV einschalten. `media_player.turn_on` löst das webOS-„Leuchtfeuer"
+        aus (bleibt 24/7); ist zusätzlich eine MAC konfiguriert, sendet media_apply
+        das Magic-Packet selbst (variabel pflegbar)."""
+        tv = self._entity_id(CONF_TV_PLAYER)
+        if tv:
+            await self._svc("media_player", "turn_on", {"entity_id": tv})
+        mac = str(self._opts.get(CONF_TV_WOL_MAC, DEFAULT_TV_WOL_MAC) or "").strip()
+        if mac:
+            await self._svc("wake_on_lan", "send_magic_packet", {"mac": mac})
+        _LOGGER.info("media_apply: R12 TV-WoL → turn_on %s (mac=%s)", tv, mac or "—")
 
     # ----- Denon-Nachlauf (R13/R14) -----
     def _duration(self, key: str, default: float) -> float:

@@ -31,9 +31,11 @@ from .const import (
     EXEC_IMMEDIATE,
     EXEC_SHADOW,
     PLAYER_ADDRESSABLE_VALUES,
+    PLAYER_OFF_VALUES,
     PLAYER_PLAYING_VALUES,
     RADIO_CATALOG,
     RADIO_STATION_LABELS,
+    SCREEN_DEVICES,
 )
 
 
@@ -74,6 +76,10 @@ class Inputs:
     tv_power_on: Optional[bool] = None
     denon_power_on: Optional[bool] = None
     bio_sleep: Optional[bool] = None
+    # Phase 4c (R12 TV-WoL). media_device = aktives Output-Gerät (media_state);
+    # tv_player_state = WebOS-State (R11 primär). None = ungebunden/unbekannt.
+    media_device: Optional[str] = None
+    tv_player_state: Optional[str] = None
 
 
 @dataclass(frozen=True)
@@ -458,6 +464,68 @@ def decide_denon_nachlauf(
             ns.tv_armed = False
             ns.tv_paused = False
             reasons.append("r14:cancel_tv")
+
+    p.reasons = reasons
+    return p, ns
+
+
+# --------------------------------------------------------------------------- #
+# Phase 4c — TV-WoL (R12): Bildschirm-Szenario → TV einschalten (ohne Debounce)
+# --------------------------------------------------------------------------- #
+@dataclass
+class TvWolState:
+    """Edge-Buchwerk: True, sobald für die laufende Bildschirm-Episode der TV-On
+    schon ausgelöst wurde (verhindert WoL-Spam, bis TV an ODER Szenario verlässt)."""
+
+    fired: bool = False
+
+
+@dataclass
+class TvWolPlan:
+    fire: bool = False
+    reasons: list = field(default_factory=list)
+
+    def as_dict(self) -> dict[str, Any]:
+        return {"fire": self.fire, "reasons": list(self.reasons)}
+
+
+def _tv_is_off(inp: "Inputs") -> Optional[bool]:
+    """R11: TV-Power. WebOS-State primär (off/standby = aus, sonst an); ist der
+    Player ungebunden/unbekannt → Wattage-Fallback (tv_power_on). None = unbekannt."""
+    st = inp.tv_player_state
+    if st is not None and st not in ("unknown", "unavailable"):
+        return st in PLAYER_OFF_VALUES
+    if inp.tv_power_on is None:
+        return None
+    return not inp.tv_power_on
+
+
+def decide_tv_wol(
+    inp: "Inputs", state: Optional[TvWolState] = None
+) -> tuple[TvWolPlan, TvWolState]:
+    """R12 — Wechsel auf ein Bildschirm-Szenario (media_device ∈ SCREEN_DEVICES)
+    bei ausgeschaltetem TV → TV einschalten (sofort, kein Debounce). Edge-getriggert:
+    feuert genau EINMAL pro Episode; Reset, sobald TV an ist ODER das Szenario kein
+    Bildschirm mehr verlangt. Unbekannter TV-Zustand (None) feuert NICHT (fail-safe)."""
+    if state is None:
+        state = TvWolState()
+    p = TvWolPlan()
+    ns = TvWolState(fired=state.fired)
+    reasons: list[str] = []
+
+    screen = inp.media_device in SCREEN_DEVICES
+    tv_off = _tv_is_off(inp)
+
+    if not screen or tv_off is False:
+        # Kein Bildschirm-Szenario oder TV ist an → Episode beendet, re-armen.
+        if ns.fired:
+            reasons.append("r12:reset")
+        ns.fired = False
+    elif screen and tv_off is True and not ns.fired:
+        p.fire = True
+        ns.fired = True
+        reasons.append("r12:tv_on")
+    # screen & tv_off is None → unbekannt, nichts tun (fail-safe).
 
     p.reasons = reasons
     return p, ns

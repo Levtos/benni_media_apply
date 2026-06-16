@@ -70,8 +70,13 @@ PLAYER_PLAYING_VALUES: Final = ("playing",)
 # Zustände, in denen ein Volume-Set sinnvoll ist (nicht unknown/unavailable/off).
 PLAYER_ADDRESSABLE_VALUES: Final = ("playing", "idle", "paused", "on", "buffering")
 # media_player/AVR-Zustände, die als "ausgeschaltet" gelten (Denon-Power-Ableitung,
-# falls kein dediziertes Power-Atomic gebunden ist).
+# falls kein dediziertes Power-Atomic gebunden ist). Gilt auch für die TV-Power
+# (R11: WebOS off/standby = aus).
 PLAYER_OFF_VALUES: Final = ("off", "standby")
+
+# R12 — Bildschirm-Szenarien: media_device-Werte, die den TV als Output brauchen
+# (TV direkt + Apple TV via HDMI). Bei Wechsel hierauf + TV aus → TV einschalten.
+SCREEN_DEVICES: Final = ("tv", "appletv")
 
 # Bio-State (core_state), bei dem R14 pausiert (Sleep dominant).
 BIO_SLEEP_VALUE: Final = "sleep"
@@ -114,6 +119,9 @@ CONF_PC_POWER: Final[str] = "pc_power_entity"
 CONF_TV_POWER: Final[str] = "tv_power_entity"
 CONF_DENON_POWER: Final[str] = "denon_power_entity"
 CONF_BIO_STATE: Final[str] = "bio_state_entity"
+# R12 — TV-WoL: aktives Output-Gerät (media_state) + TV-Player (turn_on + WebOS-State).
+CONF_MEDIA_DEVICE: Final[str] = "media_device_entity"
+CONF_TV_PLAYER: Final[str] = "tv_player_entity"
 
 # Keys, deren gebundene Entities der Coordinator beobachtet (event-driven).
 WATCH_KEYS: Final[tuple[str, ...]] = (
@@ -125,6 +133,7 @@ WATCH_KEYS: Final[tuple[str, ...]] = (
     CONF_RADIO_STATION, CONF_RADIO_READY, CONF_MANUAL_PLAYBACK,
     CONF_HOMEPODS_PLAYER, CONF_DENON_PLAYER, CONF_SUBWOOFER_SWITCH,
     CONF_PC_POWER, CONF_TV_POWER, CONF_DENON_POWER, CONF_BIO_STATE,
+    CONF_MEDIA_DEVICE, CONF_TV_PLAYER,
 )
 ENTITY_SLOT_KEYS: Final[tuple[str, ...]] = WATCH_KEYS
 
@@ -160,6 +169,9 @@ PROFILE_PREFILL: Final[dict[str, dict[str, Any]]] = {
         CONF_TV_POWER: "sensor.benni_device_living_tv",
         CONF_DENON_POWER: "",  # leer = aus Denon-Player abgeleitet (sicherer als avr-Statemix)
         CONF_BIO_STATE: "sensor.benni_core_state_bio_state",
+        # R12 — TV-WoL.
+        CONF_MEDIA_DEVICE: "sensor.benni_media_state_media_device",
+        CONF_TV_PLAYER: "media_player.living_lgtv",
     },
     PROFILE_ELTERN: {},
 }
@@ -223,6 +235,13 @@ CONF_DENON_NACHLAUF_PC: Final[str] = "denon_nachlauf_pc_seconds"
 CONF_DENON_NACHLAUF_TV: Final[str] = "denon_nachlauf_tv_seconds"
 DEFAULT_DENON_NACHLAUF_PC: Final[float] = 90.0
 DEFAULT_DENON_NACHLAUF_TV: Final[float] = 90.0
+
+# Phase 4c — TV-WoL (R12). media_player.turn_on löst das webOS-„Leuchtfeuer" aus
+# (bleibt 24/7 aktiv, die LG-Integration braucht es für den On/Off-Status); ist
+# zusätzlich eine MAC gesetzt, sendet media_apply das Magic-Packet selbst (variabel
+# pflegbar, ohne YAML-Hardcode). Leer = nur turn_on (Leuchtfeuer sendet das Packet).
+CONF_TV_WOL_MAC: Final[str] = "tv_wol_mac"
+DEFAULT_TV_WOL_MAC: Final[str] = ""
 
 RAMP_SETTING_DEFAULTS: Final[dict[str, Any]] = {
     CONF_RAMP_STEPS: DEFAULT_RAMP_STEPS,

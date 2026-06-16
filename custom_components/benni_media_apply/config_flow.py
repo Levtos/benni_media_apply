@@ -32,6 +32,8 @@ from .const import (
     CONF_RAMP_STEPS,
     CONF_SUBWOOFER_SWITCH,
     CONF_TINY_DELTA,
+    CONF_TV_PLAYER,
+    CONF_TV_WOL_MAC,
     DEFAULT_APPLY_ENABLED,
     DEFAULT_DEBOUNCE_SECONDS,
     DEFAULT_DENON_NACHLAUF_PC,
@@ -40,6 +42,7 @@ from .const import (
     DEFAULT_PROFILE,
     DEFAULT_RADIO_PLAY_DELAY,
     DEFAULT_RADIO_START_SCRIPT,
+    DEFAULT_TV_WOL_MAC,
     DEFAULT_RAMP_STEP_DELAY,
     DEFAULT_RAMP_STEPS,
     DEFAULT_TINY_DELTA,
@@ -58,7 +61,7 @@ _SWITCH = selector.EntitySelector(selector.EntitySelectorConfig(domain="switch")
 _SCRIPT = selector.EntitySelector(selector.EntitySelectorConfig(domain="script"))
 _BOOL = selector.BooleanSelector()
 
-_PLAYER_KEYS = (CONF_HOMEPODS_PLAYER, CONF_DENON_PLAYER)
+_PLAYER_KEYS = (CONF_HOMEPODS_PLAYER, CONF_DENON_PLAYER, CONF_TV_PLAYER)
 _SWITCH_KEYS = (CONF_SUBWOOFER_SWITCH,)
 
 
@@ -105,6 +108,11 @@ def _options_schema(defaults: dict[str, Any]) -> vol.Schema:
         fields[vol.Optional(key, default=defaults.get(key, default))] = coerce
     radio_default = defaults.get(CONF_RADIO_START_SCRIPT, DEFAULT_RADIO_START_SCRIPT)
     fields[vol.Optional(CONF_RADIO_START_SCRIPT, default=radio_default)] = _SCRIPT
+    # R12 — TV-WoL: variable MAC (leer = nur turn_on / webOS-Leuchtfeuer).
+    mac_default = defaults.get(CONF_TV_WOL_MAC, DEFAULT_TV_WOL_MAC)
+    fields[vol.Optional(CONF_TV_WOL_MAC, default=mac_default)] = selector.TextSelector(
+        selector.TextSelectorConfig()
+    )
     return vol.Schema(fields)
 
 

@@ -28,7 +28,7 @@ Analyse-Stand 2026-06-11 (alter Layer: `einhornzentrale/packages/media/`):
 | Apply-Gate | `system_apply_ready` × `volume_apply_allowed` | **Phase 1**: eigenes `apply_enabled` × `volume_apply_allowed` |
 | Stop-Latch | `input_boolean.media_stop_latch` (shared) | konsumiert (media_policy liest ihn auch) |
 | Radio-Katalog (Sender-Map + MA play_media) | `media_scripts` | **portiert Ph4b** (inline RADIO_CATALOG + Script-Fallback) |
-| TV-WoL | `media_automations` #1 | später (bleibt vorerst YAML) |
+| TV-WoL (R12) | `media_automations` #1 | **portiert Ph4c** (turn_on + optionale MAC; webOS-Leuchtfeuer-Automation bleibt 24/7) |
 | R20-Restore (Quiet-Ende → Pre-Quiet + Ramp-Up) | — | **NEU, spätere Phase** |
 | R13/R14 Denon-Nachlauf 90s | nicht gefunden | **NEU, spätere Phase** |
 | R24/R25 Sleep-TV-Off 45min + verlängern | nicht gefunden | **NEU, spätere Phase** |
@@ -89,7 +89,17 @@ Analyse-Stand 2026-06-11 (alter Layer: `einhornzentrale/packages/media/`):
   Treffer `{name,uri,image,favorite}` (mehrere Provider: radiobrowser/library/ard). Defaults
   als Shortcut-Liste in `status().radio.defaults` (`logic.radio_defaults()`, getestet).
   Bedient wird beides über das Umbrella-Write-Gateway (`apply/play_radio|search_radio`).
-- **Phase 4c — TV-WoL (R12, kein Debounce) + OQ-2 (ATV-Pre-Snapshot persistieren).** offen.
+- **Phase 4c — TV-WoL (R12) ✅ (0.10.0):** Wechsel auf ein Bildschirm-Szenario
+  (`media_device` ∈ {tv, appletv}) bei ausgeschaltetem TV → TV einschalten, **sofort
+  (kein Debounce)**, edge-getriggert (feuert 1× pro Episode, Reset bei TV an / kein
+  Bildschirm). TV-Power R11: WebOS-State (off/standby) primär, Wattage-Fallback.
+  Aktion: `media_player.turn_on` (löst das webOS-„Leuchtfeuer" aus — die WoL-Automation
+  bleibt 24/7, die LG-Integration braucht sie für den On/Off-Status) **+ optionale
+  variable MAC** (`tv_wol_mac`) → eigenes `wake_on_lan.send_magic_packet`. **Apply-gated**
+  (automatische Aktion, Shadow bis Scharfschalten). Pure-Logic `decide_tv_wol`/`_tv_is_off`,
+  9 neue Tests (68 grün). Observability: `status().tv_wol`.
+- **Phase 4d — OQ-2 (ATV-Pre-Snapshot persistieren).** offen (gehört evtl. zu media_state,
+  Rollback-Szenario R7 — zuerst klären, wo der Snapshot lebt).
 
 ## Konstanten (§6, alle konfigurierbar)
 16 Ramp-Schritte · 1s Schrittdelay · 0.02 Tiny-Delta · 0.10 Ducked · 90s/90s

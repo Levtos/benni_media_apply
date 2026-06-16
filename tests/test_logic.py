@@ -438,6 +438,69 @@ def test_start_radio_unknown_station_no_uri_falls_back():
     assert p.radio_uri is None
 
 
+# ------------------------------------------------- Phase 4c: TV-WoL (R12)
+def _twol(**kw):
+    base = dict(media_device=None, tv_player_state=None, tv_power_on=None)
+    base.update(kw)
+    return L.Inputs(**base)
+
+
+def test_tv_wol_fires_on_screen_when_tv_off():
+    p, s = L.decide_tv_wol(_twol(media_device="tv", tv_player_state="off"))
+    assert p.fire is True
+    assert s.fired is True
+    assert "r12:tv_on" in p.reasons
+
+
+def test_tv_wol_fires_for_appletv_too():
+    p, _ = L.decide_tv_wol(_twol(media_device="appletv", tv_player_state="standby"))
+    assert p.fire is True
+
+
+def test_tv_wol_no_refire_while_armed():
+    s = L.TvWolState(fired=True)
+    p, ns = L.decide_tv_wol(_twol(media_device="tv", tv_player_state="off"), s)
+    assert p.fire is False
+    assert ns.fired is True
+
+
+def test_tv_wol_resets_when_tv_turns_on():
+    s = L.TvWolState(fired=True)
+    p, ns = L.decide_tv_wol(_twol(media_device="tv", tv_player_state="playing"), s)
+    assert p.fire is False
+    assert ns.fired is False
+
+
+def test_tv_wol_resets_when_leaving_screen():
+    s = L.TvWolState(fired=True)
+    p, ns = L.decide_tv_wol(_twol(media_device="pc", tv_player_state="off"), s)
+    assert p.fire is False
+    assert ns.fired is False
+
+
+def test_tv_wol_no_fire_for_pc():
+    p, _ = L.decide_tv_wol(_twol(media_device="pc", tv_player_state="off"))
+    assert p.fire is False
+
+
+def test_tv_wol_no_fire_on_unknown_tv_state():
+    # WebOS ungebunden + keine Wattage → fail-safe, nicht feuern.
+    p, _ = L.decide_tv_wol(_twol(media_device="tv", tv_player_state=None, tv_power_on=None))
+    assert p.fire is False
+
+
+def test_tv_wol_wattage_fallback_fires():
+    # WebOS unavailable → Wattage-Fallback (tv_power_on False = aus) → feuern.
+    p, _ = L.decide_tv_wol(_twol(media_device="tv", tv_player_state="unavailable", tv_power_on=False))
+    assert p.fire is True
+
+
+def test_tv_wol_webos_priority_over_wattage():
+    # WebOS sagt an (playing) → kein Feuern, auch wenn Wattage "aus" meldet.
+    p, _ = L.decide_tv_wol(_twol(media_device="tv", tv_player_state="playing", tv_power_on=False))
+    assert p.fire is False
+
+
 def test_radio_defaults_shape_and_sort():
     d = L.radio_defaults()
     assert len(d) == len(C.RADIO_CATALOG)
