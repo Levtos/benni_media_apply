@@ -125,6 +125,10 @@ CONF_TV_PLAYER: Final[str] = "tv_player_entity"
 # R24 — Sleep-TV-Off: Lichtschalter-Taste, deren Druck (State-Change) den Timer
 # um eine Runde verlängert. Optional; ungebunden = keine Verlängerung möglich.
 CONF_SLEEP_TV_EXTEND: Final[str] = "sleep_tv_extend_entity"
+# R23 — Wake-Sequenz: Liste der Wake-Trigger-Entities (Kaffeemaschine, Fenster,
+# PS5-Ein, PC-Ein, Private-Time). Steigende Flanke EINER davon startet die Sequenz.
+# Bewusst NICHT TV/ATV (Schutz vor Fernbedienungs-Klick im Schlaf).
+CONF_WAKE_TRIGGERS: Final[str] = "wake_trigger_entities"
 
 # Keys, deren gebundene Entities der Coordinator beobachtet (event-driven).
 WATCH_KEYS: Final[tuple[str, ...]] = (
@@ -137,6 +141,7 @@ WATCH_KEYS: Final[tuple[str, ...]] = (
     CONF_HOMEPODS_PLAYER, CONF_DENON_PLAYER, CONF_SUBWOOFER_SWITCH,
     CONF_PC_POWER, CONF_TV_POWER, CONF_DENON_POWER, CONF_BIO_STATE,
     CONF_MEDIA_DEVICE, CONF_TV_PLAYER, CONF_SLEEP_TV_EXTEND,
+    CONF_WAKE_TRIGGERS,
 )
 ENTITY_SLOT_KEYS: Final[tuple[str, ...]] = WATCH_KEYS
 
@@ -175,6 +180,12 @@ PROFILE_PREFILL: Final[dict[str, dict[str, Any]]] = {
         # R12 — TV-WoL.
         CONF_MEDIA_DEVICE: "sensor.benni_media_state_media_device",
         CONF_TV_PLAYER: "media_player.living_lgtv",
+        # R23 — Wake-Trigger (sichere Defaults; PS5/Fenster/Private nach Bedarf
+        # ergänzen). Multi-Entity, steigende Flanke startet die Wake-Sequenz.
+        CONF_WAKE_TRIGGERS: [
+            "sensor.benni_device_kitchen_coffee",
+            "sensor.benni_device_living_pc",
+        ],
     },
     PROFILE_ELTERN: {},
 }
@@ -258,6 +269,15 @@ DEFAULT_SLEEP_TV_NOTIFY: Final[str] = "notify.lg_webos_tv_oled77c47la_deuqdjp"  
 DEFAULT_SLEEP_TV_WARN_MESSAGE: Final[str] = (
     "Sleep-Modus wird in 1 Minute aktiv, TV wird ausgeschaltet."
 )
+
+# R23 — Wake-Sequenz. HomePods starten bei start_volume, nach debounce auf das
+# media_policy-Ziel rampen. KH-3 (Wecker-Hook = separate Alarm-Lautstärke) ist
+# als Schnittstelle vorgesehen, aber noch nicht implementiert; KH-4 (bio_state
+# 'waking' wie 'awake') ist durch das „nicht sleep"-Gate automatisch erfüllt.
+CONF_WAKE_START_VOLUME: Final[str] = "wake_start_volume"
+CONF_WAKE_DEBOUNCE: Final[str] = "wake_debounce_seconds"
+DEFAULT_WAKE_START_VOLUME: Final[float] = 0.10   # Lastenheft 20_helpers
+DEFAULT_WAKE_DEBOUNCE: Final[float] = 5.0
 
 RAMP_SETTING_DEFAULTS: Final[dict[str, Any]] = {
     CONF_RAMP_STEPS: DEFAULT_RAMP_STEPS,

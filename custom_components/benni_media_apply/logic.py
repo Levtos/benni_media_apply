@@ -27,6 +27,8 @@ from .const import (
     DEFAULT_RAMP_STEP_DELAY,
     DEFAULT_RAMP_STEPS,
     DEFAULT_TINY_DELTA,
+    DEFAULT_WAKE_DEBOUNCE,
+    DEFAULT_WAKE_START_VOLUME,
     EXEC_DEBOUNCE,
     EXEC_IMMEDIATE,
     EXEC_SHADOW,
@@ -82,6 +84,8 @@ class Inputs:
     tv_player_state: Optional[str] = None
     # Phase 3b (R24 Sleep-TV-Off). Flanke vom Coordinator (Lichtschalter-Druck).
     sleep_tv_extend_pressed: bool = False
+    # R23 (Wake-Sequenz). Flanke vom Coordinator (ein Wake-Trigger ging an).
+    wake_trigger_fired: bool = False
 
 
 @dataclass(frozen=True)
@@ -91,6 +95,8 @@ class RampSettings:
     tiny_delta: float = DEFAULT_TINY_DELTA
     ducked_level: float = DEFAULT_DUCKED_LEVEL
     debounce_seconds: float = DEFAULT_DEBOUNCE_SECONDS  # R2-Fenster (Coordinator-Timing)
+    wake_start_volume: float = DEFAULT_WAKE_START_VOLUME  # R23 HomePods-Startlautstärke
+    wake_debounce_seconds: float = DEFAULT_WAKE_DEBOUNCE
 
 
 @dataclass
@@ -586,3 +592,32 @@ def decide_sleep_tv(
 
     p.reasons = reasons
     return p, ns
+
+
+# --------------------------------------------------------------------------- #
+# Phase R23 — Wake-Sequenz: Trigger-Flanke → HomePods 0.10 → Ramp auf Ziel
+# --------------------------------------------------------------------------- #
+@dataclass
+class WakePlan:
+    fire: bool = False
+    reasons: list = field(default_factory=list)
+
+    def as_dict(self) -> dict[str, Any]:
+        return {"fire": self.fire, "reasons": list(self.reasons)}
+
+
+def decide_wake(inp: "Inputs") -> WakePlan:
+    """R23: Eine steigende Flanke eines Wake-Triggers (Kaffeemaschine, Fenster,
+    PS5-/PC-Ein, Private-Time) startet die Wake-Sequenz — der Coordinator setzt
+    HomePods auf die Startlautstärke und rampt nach dem Debounce auf das
+    media_policy-Ziel. Im Sleep unterdrückt (R25 dominant); `waking`/`awake`
+    (= nicht sleep) sind erlaubt (KH-4). Stateless: Flankenerkennung im Coordinator."""
+    p = WakePlan()
+    if not inp.wake_trigger_fired:
+        return p
+    if inp.bio_sleep is True:
+        p.reasons.append("r23:suppressed_sleep")
+        return p
+    p.fire = True
+    p.reasons.append("r23:wake")
+    return p

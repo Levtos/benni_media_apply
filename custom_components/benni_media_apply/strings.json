@@ -27,6 +27,7 @@
           "media_device_entity": "media_state · Aktives Output-Gerät (R12 Bildschirm-Szenario)",
           "tv_player_entity": "TV · webOS Media-Player (turn_on + On/Off-State)",
           "sleep_tv_extend_entity": "Sleep-TV-Off · Lichtschalter-Taste (verlängert; R24)",
+          "wake_trigger_entities": "Wake-Trigger (R23, mehrere: Kaffee/Fenster/PS5/PC/Private — NICHT TV/ATV)",
           "homepods_player_entity": "HomePods · Media-Player (MA-Gruppe)",
           "denon_player_entity": "Denon · Media-Player",
           "subwoofer_switch_entity": "Subwoofer · Plug (switch)"
@@ -48,7 +49,9 @@
           "sleep_tv_off_delay_seconds": "Sleep-TV-Off: Verzögerung bis Aus (s, R24 45min)",
           "sleep_tv_warn_lead_seconds": "Sleep-TV-Off: Warnung vorab (s)",
           "sleep_tv_notify_service": "Sleep-TV-Off: Warn-Notify-Service (z.B. notify.living_lgtv; leer = keine)",
-          "sleep_tv_warn_message": "Sleep-TV-Off: Warntext"
+          "sleep_tv_warn_message": "Sleep-TV-Off: Warntext",
+          "wake_start_volume": "Wake-Sequenz: Startlautstärke (R23, 0..1)",
+          "wake_debounce_seconds": "Wake-Sequenz: Debounce vor Ramp (s)"
         }
       }
     },
@@ -82,6 +85,7 @@
           "media_device_entity": "media_state · Aktives Output-Gerät (R12 Bildschirm-Szenario)",
           "tv_player_entity": "TV · webOS Media-Player (turn_on + On/Off-State)",
           "sleep_tv_extend_entity": "Sleep-TV-Off · Lichtschalter-Taste (verlängert; R24)",
+          "wake_trigger_entities": "Wake-Trigger (R23, mehrere: Kaffee/Fenster/PS5/PC/Private — NICHT TV/ATV)",
           "homepods_player_entity": "HomePods · Media-Player (MA-Gruppe)",
           "denon_player_entity": "Denon · Media-Player",
           "subwoofer_switch_entity": "Subwoofer · Plug (switch)"
@@ -102,7 +106,9 @@
           "sleep_tv_off_delay_seconds": "Sleep-TV-Off: Verzögerung bis Aus (s, R24 45min)",
           "sleep_tv_warn_lead_seconds": "Sleep-TV-Off: Warnung vorab (s)",
           "sleep_tv_notify_service": "Sleep-TV-Off: Warn-Notify-Service (z.B. notify.living_lgtv; leer = keine)",
-          "sleep_tv_warn_message": "Sleep-TV-Off: Warntext"
+          "sleep_tv_warn_message": "Sleep-TV-Off: Warntext",
+          "wake_start_volume": "Wake-Sequenz: Startlautstärke (R23, 0..1)",
+          "wake_debounce_seconds": "Wake-Sequenz: Debounce vor Ramp (s)"
         }
       }
     }

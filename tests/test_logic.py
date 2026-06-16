@@ -553,6 +553,31 @@ def test_sleep_tv_cancel_when_tv_off():
     assert ns.armed is False
 
 
+# ----------------------------------------------------- R23: Wake-Sequenz
+def test_wake_fires_on_trigger_when_not_sleep():
+    p = L.decide_wake(L.Inputs(wake_trigger_fired=True, bio_sleep=False))
+    assert p.fire is True
+    assert "r23:wake" in p.reasons
+
+
+def test_wake_fires_when_bio_unknown():
+    # bio ungebunden (None) ≠ sleep → erlaubt.
+    p = L.decide_wake(L.Inputs(wake_trigger_fired=True, bio_sleep=None))
+    assert p.fire is True
+
+
+def test_wake_suppressed_during_sleep():
+    p = L.decide_wake(L.Inputs(wake_trigger_fired=True, bio_sleep=True))
+    assert p.fire is False
+    assert "r23:suppressed_sleep" in p.reasons
+
+
+def test_wake_no_fire_without_trigger():
+    p = L.decide_wake(L.Inputs(wake_trigger_fired=False, bio_sleep=False))
+    assert p.fire is False
+    assert p.reasons == []
+
+
 def test_radio_defaults_shape_and_sort():
     d = L.radio_defaults()
     assert len(d) == len(C.RADIO_CATALOG)

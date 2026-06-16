@@ -67,6 +67,9 @@ from .const import (
     CONF_TV_PLAYER,
     CONF_TV_POWER,
     CONF_TV_WOL_MAC,
+    CONF_WAKE_DEBOUNCE,
+    CONF_WAKE_START_VOLUME,
+    CONF_WAKE_TRIGGERS,
     CONF_VOL_TARGET_DENON,
     CONF_VOL_TARGET_HOMEPODS,
     CONF_VOLUME_APPLY_ALLOWED,
@@ -85,6 +88,8 @@ from .const import (
     DEFAULT_SLEEP_TV_WARN_LEAD,
     DEFAULT_SLEEP_TV_WARN_MESSAGE,
     DEFAULT_TV_WOL_MAC,
+    DEFAULT_WAKE_DEBOUNCE,
+    DEFAULT_WAKE_START_VOLUME,
     DEFAULT_RAMP_STEP_DELAY,
     DEFAULT_RAMP_STEPS,
     DEFAULT_TINY_DELTA,
@@ -132,6 +137,8 @@ class MediaApplyCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self._sleep_tv_state = logic.SleepTvState()
         self._sleep_tv_task: Optional[asyncio.Task] = None
         self._last_extend_state: str | None = None
+        self._wake_task: Optional[asyncio.Task] = None
+        self._last_wake_states: dict[str, bool] = {}
         self._nachlauf_tasks: dict[str, asyncio.Task] = {}
         self._last_debug: dict[str, Any] = {}
         # Observability (FLEET-46): Ramp-Fortschritt + Apply-Log-Ringpuffer.
@@ -167,6 +174,8 @@ class MediaApplyCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             val = self._entity_id(key)
             if isinstance(val, str) and val:
                 ids.append(val)
+            elif isinstance(val, (list, tuple)):   # Multi-Entity (Wake-Trigger)
+                ids.extend(e for e in val if isinstance(e, str) and e)
         return list(dict.fromkeys(ids))
 
     def bindings(self) -> dict[str, Any]:
@@ -191,6 +200,8 @@ class MediaApplyCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             tiny_delta=_f(CONF_TINY_DELTA, DEFAULT_TINY_DELTA),
             ducked_level=_f(CONF_DUCKED_LEVEL, DEFAULT_DUCKED_LEVEL),
             debounce_seconds=_f(CONF_DEBOUNCE_SECONDS, DEFAULT_DEBOUNCE_SECONDS),
+            wake_start_volume=_f(CONF_WAKE_START_VOLUME, DEFAULT_WAKE_START_VOLUME),
+            wake_debounce_seconds=_f(CONF_WAKE_DEBOUNCE, DEFAULT_WAKE_DEBOUNCE),
         )
 
     # ----- lifecycle -----
@@ -213,6 +224,7 @@ class MediaApplyCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self._cancel_ramp()
         self._cancel_debounce()
         self._cancel_sleep_tv()
+        self._cancel_wake()
         for key in list(self._nachlauf_tasks):
             self._cancel_nachlauf(key)
 
@@ -318,11 +330,17 @@ class MediaApplyCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             inputs, self._nachlauf_state
         )
         twol, self._tv_wol_state = logic.decide_tv_wol(inputs, self._tv_wol_state)
-        stv_inp = replace(inputs, sleep_tv_extend_pressed=self._consume_extend_edge())
-        splan, self._sleep_tv_state = logic.decide_sleep_tv(stv_inp, self._sleep_tv_state)
+        edge_inp = replace(
+            inputs,
+            sleep_tv_extend_pressed=self._consume_extend_edge(),
+            wake_trigger_fired=self._wake_trigger_fired(),
+        )
+        splan, self._sleep_tv_state = logic.decide_sleep_tv(edge_inp, self._sleep_tv_state)
+        wplan = logic.decide_wake(edge_inp)
         self._last_debug = {
             **plan.as_dict(), "nachlauf": nplan.as_dict(),
             "tv_wol": twol.as_dict(), "sleep_tv": splan.as_dict(),
+            "wake": wplan.as_dict(),
         }
         self._maybe_log(plan)
         # R2/R3: Ausführung läuft über Debounce-Fenster + Serialisierung, Quiet
@@ -341,6 +359,9 @@ class MediaApplyCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             self._schedule_sleep_tv()
         elif splan.intent == logic.TIMER_CANCEL:
             self._cancel_sleep_tv()
+        # R23 Wake-Sequenz: Trigger-Flanke → HomePods 0.10 → Debounce → Ramp auf Ziel.
+        if wplan.fire and self.apply_enabled:
+            self._schedule_wake()
         return {
             "last_action": plan.homepods_action,
             "homepods_target": plan.homepods_levels[-1] if plan.homepods_levels else None,
@@ -516,12 +537,21 @@ class MediaApplyCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 "notify": str(self._opts.get(CONF_SLEEP_TV_NOTIFY, DEFAULT_SLEEP_TV_NOTIFY) or "") or None,
                 "extend_bound": bool(self._entity_id(CONF_SLEEP_TV_EXTEND)),
             },
+            "wake": {
+                "running": self._wake_task is not None and not self._wake_task.done(),
+                "triggers": self._entity_id(CONF_WAKE_TRIGGERS),
+                "start_volume": s.wake_start_volume,
+                "debounce_s": s.wake_debounce_seconds,
+                "bio_sleep": inp.bio_sleep,
+            },
             "settings": {
                 "ramp_steps": s.ramp_steps,
                 "ramp_step_delay_s": s.ramp_step_delay_s,
                 "tiny_delta": s.tiny_delta,
                 "ducked_level": s.ducked_level,
                 "debounce_seconds": s.debounce_seconds,
+                "wake_start_volume": s.wake_start_volume,
+                "wake_debounce_seconds": s.wake_debounce_seconds,
             },
             # Radio-Shortcuts fürs Cockpit (Defaults; Suche läuft via Action).
             "radio": {"defaults": logic.radio_defaults()},
@@ -663,6 +693,67 @@ class MediaApplyCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         if mac:
             await self._svc("wake_on_lan", "send_magic_packet", {"mac": mac})
         _LOGGER.info("media_apply: R12 TV-WoL → turn_on %s (mac=%s)", tv, mac or "—")
+
+    # ----- Wake-Sequenz (R23) -----
+    def _wake_trigger_fired(self) -> bool:
+        """Steigende Flanke EINES Wake-Triggers (Multi-Entity). Nur EINMAL pro Tick
+        aufrufen (mutiert die Vortick-States). Erststand zählt nicht als Flanke
+        (kein Wake beim Boot, wenn ein Trigger schon an ist)."""
+        ents = self._entity_id(CONF_WAKE_TRIGGERS)
+        if isinstance(ents, str):
+            ents = [ents]
+        if not isinstance(ents, (list, tuple)):
+            return False
+        fired = False
+        for eid in ents:
+            if not isinstance(eid, str) or not eid:
+                continue
+            st = self.hass.states.get(eid)
+            raw = st.state if st and st.state not in ("unknown", "unavailable") else None
+            cur = _bool(raw)
+            if self._last_wake_states.get(eid) is False and cur is True:
+                fired = True
+            self._last_wake_states[eid] = cur
+        return fired
+
+    @callback
+    def _schedule_wake(self) -> None:
+        self._cancel_wake()
+        self._wake_task = self.hass.async_create_task(self._run_wake())
+
+    @callback
+    def _cancel_wake(self) -> None:
+        if self._wake_task is not None and not self._wake_task.done():
+            self._wake_task.cancel()
+        self._wake_task = None
+
+    async def _run_wake(self) -> None:
+        """R23: HomePods auf Startlautstärke → Debounce → Ramp auf das aktuelle
+        media_policy-Ziel (`volume_target_homepods`). Abbrechbar; nutzt die normale
+        Ramp-Maschine für den Hochlauf."""
+        hp = self._entity_id(CONF_HOMEPODS_PLAYER)
+        if not hp:
+            return
+        s = self.settings()
+        start = round(max(0.0, min(1.0, s.wake_start_volume)), 3)
+        try:
+            self._cancel_ramp()
+            await self._svc("media_player", "volume_set", {"entity_id": hp, "volume_level": start})
+            await asyncio.sleep(max(0.0, s.wake_debounce_seconds))
+            target = self._float(CONF_VOL_TARGET_HOMEPODS)
+            if target is None:
+                return
+            levels = logic.ramp_levels(start, target, s.ramp_steps, s.tiny_delta)
+            if levels:
+                self._cancel_ramp()
+                self._ramp_task = self.hass.async_create_task(
+                    self._run_ramp(hp, levels, s.ramp_step_delay_s)
+                )
+            _LOGGER.info("media_apply: R23 Wake-Sequenz %s → %.2f → Ramp auf %.2f", hp, start, target)
+        except asyncio.CancelledError:
+            raise
+        finally:
+            self._wake_task = None
 
     # ----- Sleep-TV-Off (R24) -----
     def _consume_extend_edge(self) -> bool:
