@@ -235,10 +235,21 @@ def _ninp(**kw):
 
 # ---------------------------------------------------------------- R13 (PC)
 def test_r13_arm_when_pc_off_and_denon_on():
-    p, s = L.decide_denon_nachlauf(_ninp(pc_power_on=False, denon_power_on=True))
+    # Fallflanke PC an→aus (FLEET-80: nur die Flanke armt, nicht Steady-State).
+    st = L.NachlaufState(last_pc_on=True)
+    p, s = L.decide_denon_nachlauf(_ninp(pc_power_on=False, denon_power_on=True), st)
     assert p.pc == L.TIMER_ARM
     assert s.pc_armed is True
     assert "r13:arm_pc" in p.reasons
+
+
+def test_r13_no_arm_steady_state_pc_off_fleet80():
+    # FLEET-80: PC dauerhaft aus (kein on→off-Edge, z.B. beim TV-Schauen) → KEIN
+    # Arm/Re-Arm → kein 90s-Denon-Off-Loop.
+    st = L.NachlaufState(last_pc_on=False)
+    p, s = L.decide_denon_nachlauf(_ninp(pc_power_on=False, denon_power_on=True), st)
+    assert p.pc == L.TIMER_NONE
+    assert s.pc_armed is False
 
 
 def test_r13_no_arm_when_pc_on():
@@ -290,7 +301,8 @@ def test_r13_cancel_when_inputs_go_unknown():
 
 # ---------------------------------------------------------------- R14 (TV)
 def test_r14_arm_when_tv_off_and_denon_on():
-    p, s = L.decide_denon_nachlauf(_ninp(tv_power_on=False, denon_power_on=True))
+    st = L.NachlaufState(last_tv_on=True)   # Fallflanke TV an→aus (FLEET-80)
+    p, s = L.decide_denon_nachlauf(_ninp(tv_power_on=False, denon_power_on=True), st)
     assert p.tv == L.TIMER_ARM
     assert s.tv_armed is True
 
@@ -342,8 +354,9 @@ def test_r14_paused_then_tv_returns_cancels_after_sleep():
 
 # ---------------------------------------------------------------- shared
 def test_pc_and_tv_independent():
+    st = L.NachlaufState(last_pc_on=True, last_tv_on=True)   # beide Fallflanken
     p, s = L.decide_denon_nachlauf(
-        _ninp(pc_power_on=False, tv_power_on=False, denon_power_on=True)
+        _ninp(pc_power_on=False, tv_power_on=False, denon_power_on=True), st
     )
     assert p.pc == L.TIMER_ARM
     assert p.tv == L.TIMER_ARM

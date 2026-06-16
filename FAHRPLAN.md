@@ -56,6 +56,11 @@ Analyse-Stand 2026-06-11 (alter Layer: `einhornzentrale/packages/media/`):
   Atomic-Slugs festklopft → bis dahin None ⇒ kein Arm (doppelt safe). `denon_power`
   leitet sich notfalls aus dem Denon-media_player ab, `bio_state` aus core_state.
   Observability: `binary_sensor …_denon_nachlauf_active`. 21 neue pure-logic-Tests.
+  **FLEET-80-Fix (0.13.1):** Armen jetzt KANTEN-getriggert (Fallflanke PC/TV an→aus,
+  `last_pc_on`/`last_tv_on`). Vorher armte der Steady-State „PC aus" (Normalfall beim
+  TV-Schauen) → 90s → Denon aus → re-arm = Dauer-Loop (live: nachlauf_active flappte
+  alle ~90s, Denon ungewollt aus). Jetzt: nur eine echte on→off-Flanke armt, kein
+  Re-Arm während PC/TV durchgehend aus bleibt.
 - **Phase 3b — Sleep-TV-Off R24 ✅ (0.11.0):** Bio-State=sleep + TV läuft → Timer
   (`sleep_tv_off_delay_seconds`, 45 min) → Warnung auf dem TV (`sleep_tv_notify_service`,
   z.B. `notify.living_lgtv`, `sleep_tv_warn_lead_seconds` vorab) → TV aus, sofern nicht
