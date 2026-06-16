@@ -38,6 +38,9 @@ from .const import (
     CONF_TINY_DELTA,
     CONF_TV_PLAYER,
     CONF_TV_WOL_MAC,
+    CONF_WAKE_DEBOUNCE,
+    CONF_WAKE_START_VOLUME,
+    CONF_WAKE_TRIGGERS,
     DEFAULT_APPLY_ENABLED,
     DEFAULT_DEBOUNCE_SECONDS,
     DEFAULT_DENON_NACHLAUF_PC,
@@ -51,6 +54,8 @@ from .const import (
     DEFAULT_SLEEP_TV_WARN_LEAD,
     DEFAULT_SLEEP_TV_WARN_MESSAGE,
     DEFAULT_TV_WOL_MAC,
+    DEFAULT_WAKE_DEBOUNCE,
+    DEFAULT_WAKE_START_VOLUME,
     DEFAULT_RAMP_STEP_DELAY,
     DEFAULT_RAMP_STEPS,
     DEFAULT_TINY_DELTA,
@@ -71,9 +76,13 @@ _BOOL = selector.BooleanSelector()
 
 _PLAYER_KEYS = (CONF_HOMEPODS_PLAYER, CONF_DENON_PLAYER, CONF_TV_PLAYER)
 _SWITCH_KEYS = (CONF_SUBWOOFER_SWITCH,)
+_MULTI = selector.EntitySelector(selector.EntitySelectorConfig(multiple=True))
+_MULTI_KEYS = (CONF_WAKE_TRIGGERS,)
 
 
 def _selector_for(key: str) -> Any:
+    if key in _MULTI_KEYS:
+        return _MULTI
     if key in _PLAYER_KEYS:
         return _PLAYER
     if key in _SWITCH_KEYS:
@@ -96,6 +105,9 @@ _RAMP_FIELDS: dict[str, tuple[Any, Any]] = {
     # Phase 3b — Sleep-TV-Off (R24), Sekunden.
     CONF_SLEEP_TV_OFF_DELAY: (DEFAULT_SLEEP_TV_OFF_DELAY, vol.All(vol.Coerce(float), vol.Range(min=0.0, max=21600.0))),
     CONF_SLEEP_TV_WARN_LEAD: (DEFAULT_SLEEP_TV_WARN_LEAD, vol.All(vol.Coerce(float), vol.Range(min=0.0, max=600.0))),
+    # R23 — Wake-Sequenz.
+    CONF_WAKE_START_VOLUME: (DEFAULT_WAKE_START_VOLUME, vol.All(vol.Coerce(float), vol.Range(min=0.0, max=1.0))),
+    CONF_WAKE_DEBOUNCE: (DEFAULT_WAKE_DEBOUNCE, vol.All(vol.Coerce(float), vol.Range(min=0.0, max=60.0))),
 }
 
 
