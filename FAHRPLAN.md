@@ -110,13 +110,15 @@ Analyse-Stand 2026-06-11 (alter Layer: `einhornzentrale/packages/media/`):
   `Store` (debounced) persistiert + beim Setup geladen. Nicht media_apply (Szenario-
   Ableitung ist L1).
 
-- **Wake-Sequenz R23 ✅ (0.12.0, FLEET-42):** steigende Flanke eines Wake-Triggers
-  (`wake_trigger_entities`, Multi: Kaffee/Fenster/PS5/PC/Private — **nicht** TV/ATV) →
-  HomePods auf `wake_start_volume` (0.10) → `wake_debounce_seconds` (5s) → Ramp auf das
-  media_policy-Ziel (`volume_target_homepods`). Im Sleep unterdrückt (R25 dominant);
-  `waking`/`awake` erlaubt (KH-4). KH-3 (Alarm-Lautstärke) als Hook vorgesehen, noch
-  nicht implementiert. Apply-gated, abbrechbar, Multi-Trigger-Flankenerkennung im
-  Coordinator. Pure-Logic `decide_wake`, 4 neue Tests (79 grün). `status().wake`.
+- **Wake-Sequenz R23 ✅ (0.12.0 / 0.12.1, FLEET-42):** **primärer Trigger = bio_state-
+  Übergang → awake/waking** (aus `core_state`, KEINE Doppel-Detektion der Indikatoren;
+  `waking` wie `awake` = KH-4). Optionaler Zusatz: `wake_trigger_entities` (Multi,
+  Default leer; z.B. Private-Time). Bewusst **nicht** TV/ATV. Ablauf: HomePods auf
+  `wake_start_volume` (0.10) → `wake_debounce_seconds` (5s) → Ramp auf das media_policy-
+  Ziel (`volume_target_homepods`). Im Sleep unterdrückt (R25). KH-3 (Alarm-Lautstärke)
+  als Hook vorgesehen, noch nicht implementiert. Apply-gated, abbrechbar; Flankenerkennung
+  (bio + optionale Roh-Trigger) im Coordinator. Pure-Logic `decide_wake`, 4 Tests (79 grün).
+  `status().wake`. (v0.12.0 hatte fälschlich Indikator-Doppel-Detektion → 0.12.1 korrigiert.)
 
 **FLEET-40 ist damit vollständig** (R1/R3/R4/R12–R15, Ramps, R20-Restore, R13/R14
 Denon-Nachlauf, R24 Sleep-TV-Off, Radio-Port, OQ-2). Bleibt nur der Go-Live (Apply
