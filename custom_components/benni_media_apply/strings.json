@@ -24,6 +24,7 @@
           "radio_station_entity": "Radio · Sender (input_select)",
           "radio_ready_entity": "Radio · Ready (binary_sensor)",
           "manual_playback_entity": "Radio · Manuelle Wiedergabe aktiv (binary_sensor)",
+          "planned_station_playing_entity": "Radio · Geplante Station läuft (binary_sensor, FLEET-79)",
           "media_device_entity": "media_state · Aktives Output-Gerät (R12 Bildschirm-Szenario)",
           "tv_player_entity": "TV · webOS Media-Player (turn_on + On/Off-State)",
           "sleep_tv_extend_entity": "Sleep-TV-Off · Lichtschalter-Taste (verlängert; R24)",
@@ -38,6 +39,8 @@
         "description": "Apply ist standardmäßig AUS (Shadow): der Plan wird berechnet + als Sensoren gezeigt, aber NICHT ausgeführt. Erst einschalten, wenn der Shadow stimmt. Ramp-Werte 0..1.",
         "data": {
           "apply_enabled": "Apply aktiviert (aus = Shadow, schaltet keine Geräte)",
+          "radio_autostart_enabled": "Radio-Autostart (Wake → Latch lösen + Sender; Resume nach manuell)",
+          "radio_resume_delay_seconds": "Radio-Resume: Delay nach manueller Wiedergabe (s)",
           "ramp_steps": "HomePods Ramp-Schritte",
           "ramp_step_delay_seconds": "Ramp-Schrittdelay (s)",
           "tiny_delta": "Tiny-Delta (≤ → direkt setzen, kein Ramp)",
@@ -82,6 +85,7 @@
           "radio_station_entity": "Radio · Sender (input_select)",
           "radio_ready_entity": "Radio · Ready (binary_sensor)",
           "manual_playback_entity": "Radio · Manuelle Wiedergabe aktiv (binary_sensor)",
+          "planned_station_playing_entity": "Radio · Geplante Station läuft (binary_sensor, FLEET-79)",
           "media_device_entity": "media_state · Aktives Output-Gerät (R12 Bildschirm-Szenario)",
           "tv_player_entity": "TV · webOS Media-Player (turn_on + On/Off-State)",
           "sleep_tv_extend_entity": "Sleep-TV-Off · Lichtschalter-Taste (verlängert; R24)",
@@ -95,6 +99,8 @@
         "title": "Apply-Gate & Ramp-Settings",
         "data": {
           "apply_enabled": "Apply aktiviert (aus = Shadow, schaltet keine Geräte)",
+          "radio_autostart_enabled": "Radio-Autostart (Wake → Latch lösen + Sender; Resume nach manuell)",
+          "radio_resume_delay_seconds": "Radio-Resume: Delay nach manueller Wiedergabe (s)",
           "ramp_steps": "HomePods Ramp-Schritte",
           "ramp_step_delay_seconds": "Ramp-Schrittdelay (s)",
           "tiny_delta": "Tiny-Delta (≤ → direkt setzen, kein Ramp)",

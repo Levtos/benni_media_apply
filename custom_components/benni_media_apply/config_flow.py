@@ -26,7 +26,9 @@ from .const import (
     CONF_DUCKED_LEVEL,
     CONF_HOMEPODS_PLAYER,
     CONF_PROFILE,
+    CONF_RADIO_AUTOSTART,
     CONF_RADIO_PLAY_DELAY,
+    CONF_RADIO_RESUME_DELAY,
     CONF_RADIO_START_SCRIPT,
     CONF_RAMP_STEP_DELAY,
     CONF_RAMP_STEPS,
@@ -47,7 +49,9 @@ from .const import (
     DEFAULT_DENON_NACHLAUF_TV,
     DEFAULT_DUCKED_LEVEL,
     DEFAULT_PROFILE,
+    DEFAULT_RADIO_AUTOSTART,
     DEFAULT_RADIO_PLAY_DELAY,
+    DEFAULT_RADIO_RESUME_DELAY,
     DEFAULT_RADIO_START_SCRIPT,
     DEFAULT_SLEEP_TV_NOTIFY,
     DEFAULT_SLEEP_TV_OFF_DELAY,
@@ -102,6 +106,8 @@ _RAMP_FIELDS: dict[str, tuple[Any, Any]] = {
     CONF_DENON_NACHLAUF_TV: (DEFAULT_DENON_NACHLAUF_TV, vol.All(vol.Coerce(float), vol.Range(min=0.0, max=600.0))),
     # Phase 4b — Radio: Pause zwischen play_media und media_play.
     CONF_RADIO_PLAY_DELAY: (DEFAULT_RADIO_PLAY_DELAY, vol.All(vol.Coerce(float), vol.Range(min=0.0, max=15.0))),
+    # FLEET-79 — Radio-Autostart: Resume-Delay nach manueller Wiedergabe.
+    CONF_RADIO_RESUME_DELAY: (DEFAULT_RADIO_RESUME_DELAY, vol.All(vol.Coerce(float), vol.Range(min=0.0, max=120.0))),
     # Phase 3b — Sleep-TV-Off (R24), Sekunden.
     CONF_SLEEP_TV_OFF_DELAY: (DEFAULT_SLEEP_TV_OFF_DELAY, vol.All(vol.Coerce(float), vol.Range(min=0.0, max=21600.0))),
     CONF_SLEEP_TV_WARN_LEAD: (DEFAULT_SLEEP_TV_WARN_LEAD, vol.All(vol.Coerce(float), vol.Range(min=0.0, max=600.0))),
@@ -125,6 +131,10 @@ def _options_schema(defaults: dict[str, Any]) -> vol.Schema:
         vol.Optional(
             CONF_APPLY_ENABLED,
             default=bool(defaults.get(CONF_APPLY_ENABLED, DEFAULT_APPLY_ENABLED)),
+        ): _BOOL,
+        vol.Optional(
+            CONF_RADIO_AUTOSTART,
+            default=bool(defaults.get(CONF_RADIO_AUTOSTART, DEFAULT_RADIO_AUTOSTART)),
         ): _BOOL,
     }
     for key, (default, coerce) in _RAMP_FIELDS.items():
