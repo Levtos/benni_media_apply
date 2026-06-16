@@ -30,6 +30,10 @@ from .const import (
     CONF_RADIO_START_SCRIPT,
     CONF_RAMP_STEP_DELAY,
     CONF_RAMP_STEPS,
+    CONF_SLEEP_TV_NOTIFY,
+    CONF_SLEEP_TV_OFF_DELAY,
+    CONF_SLEEP_TV_WARN_LEAD,
+    CONF_SLEEP_TV_WARN_MESSAGE,
     CONF_SUBWOOFER_SWITCH,
     CONF_TINY_DELTA,
     CONF_TV_PLAYER,
@@ -42,6 +46,10 @@ from .const import (
     DEFAULT_PROFILE,
     DEFAULT_RADIO_PLAY_DELAY,
     DEFAULT_RADIO_START_SCRIPT,
+    DEFAULT_SLEEP_TV_NOTIFY,
+    DEFAULT_SLEEP_TV_OFF_DELAY,
+    DEFAULT_SLEEP_TV_WARN_LEAD,
+    DEFAULT_SLEEP_TV_WARN_MESSAGE,
     DEFAULT_TV_WOL_MAC,
     DEFAULT_RAMP_STEP_DELAY,
     DEFAULT_RAMP_STEPS,
@@ -85,6 +93,9 @@ _RAMP_FIELDS: dict[str, tuple[Any, Any]] = {
     CONF_DENON_NACHLAUF_TV: (DEFAULT_DENON_NACHLAUF_TV, vol.All(vol.Coerce(float), vol.Range(min=0.0, max=600.0))),
     # Phase 4b — Radio: Pause zwischen play_media und media_play.
     CONF_RADIO_PLAY_DELAY: (DEFAULT_RADIO_PLAY_DELAY, vol.All(vol.Coerce(float), vol.Range(min=0.0, max=15.0))),
+    # Phase 3b — Sleep-TV-Off (R24), Sekunden.
+    CONF_SLEEP_TV_OFF_DELAY: (DEFAULT_SLEEP_TV_OFF_DELAY, vol.All(vol.Coerce(float), vol.Range(min=0.0, max=21600.0))),
+    CONF_SLEEP_TV_WARN_LEAD: (DEFAULT_SLEEP_TV_WARN_LEAD, vol.All(vol.Coerce(float), vol.Range(min=0.0, max=600.0))),
 }
 
 
@@ -111,6 +122,15 @@ def _options_schema(defaults: dict[str, Any]) -> vol.Schema:
     # R12 — TV-WoL: variable MAC (leer = nur turn_on / webOS-Leuchtfeuer).
     mac_default = defaults.get(CONF_TV_WOL_MAC, DEFAULT_TV_WOL_MAC)
     fields[vol.Optional(CONF_TV_WOL_MAC, default=mac_default)] = selector.TextSelector(
+        selector.TextSelectorConfig()
+    )
+    # R24 — Sleep-TV-Off: Warn-Notify-Service + Warntext (Text, optional).
+    notify_default = defaults.get(CONF_SLEEP_TV_NOTIFY, DEFAULT_SLEEP_TV_NOTIFY)
+    fields[vol.Optional(CONF_SLEEP_TV_NOTIFY, default=notify_default)] = selector.TextSelector(
+        selector.TextSelectorConfig()
+    )
+    warn_default = defaults.get(CONF_SLEEP_TV_WARN_MESSAGE, DEFAULT_SLEEP_TV_WARN_MESSAGE)
+    fields[vol.Optional(CONF_SLEEP_TV_WARN_MESSAGE, default=warn_default)] = selector.TextSelector(
         selector.TextSelectorConfig()
     )
     return vol.Schema(fields)

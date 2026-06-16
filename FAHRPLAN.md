@@ -56,9 +56,16 @@ Analyse-Stand 2026-06-11 (alter Layer: `einhornzentrale/packages/media/`):
   Atomic-Slugs festklopft → bis dahin None ⇒ kein Arm (doppelt safe). `denon_power`
   leitet sich notfalls aus dem Denon-media_player ab, `bio_state` aus core_state.
   Observability: `binary_sensor …_denon_nachlauf_active`. 21 neue pure-logic-Tests.
-- **Phase 3b — Sleep-TV-Off R24/R25:** zurückgestellt — braucht TV-Warnhinweis +
-  Lichtschalter-Verlängern (grenzt an notification_router/door) + Sleep-Lautstärken.
-  Separate Karte, sobald Notify/Tasten-Scope geklärt.
+- **Phase 3b — Sleep-TV-Off R24 ✅ (0.11.0):** Bio-State=sleep + TV läuft → Timer
+  (`sleep_tv_off_delay_seconds`, 45 min) → Warnung auf dem TV (`sleep_tv_notify_service`,
+  z.B. `notify.living_lgtv`, `sleep_tv_warn_lead_seconds` vorab) → TV aus, sofern nicht
+  verlängert. **Lichtschalter-Verlängern** über `sleep_tv_extend_entity` (State-Change =
+  Druck → Timer-Neustart, mehrfach). Abbruch bei Sleep-Ende/TV-aus. Abbrechbarer
+  asyncio-Timer wie der Denon-Nachlauf; TV-aus + Warnung **apply-gated**. Pure-Logic
+  `decide_sleep_tv` (arm/cancel/extend, TV-Zustand unbekannt → fail-safe), 7 neue Tests.
+  R25 „Sleep dominant" (HomePods aus / TV-Denon-Sleep-Volumes) ist durch die
+  Decision→Apply-Pipeline gedeckt (media_policy entscheidet, Apply führt aus).
+  Observability: `status().sleep_tv`.
 - **Phase 4a — Debounce (R2) + serialisierte Ausführung (R3) ✅ (0.7.0):** Geräte-
   Schaltung läuft jetzt über ein konfigurierbares Debounce-Fenster (`debounce_seconds`,
   default 5s) → Trigger-Bursts fallen zu EINER Aktion zusammen; **Quiet bricht
@@ -98,8 +105,14 @@ Analyse-Stand 2026-06-11 (alter Layer: `einhornzentrale/packages/media/`):
   variable MAC** (`tv_wol_mac`) → eigenes `wake_on_lan.send_magic_packet`. **Apply-gated**
   (automatische Aktion, Shadow bis Scharfschalten). Pure-Logic `decide_tv_wol`/`_tv_is_off`,
   9 neue Tests (68 grün). Observability: `status().tv_wol`.
-- **Phase 4d — OQ-2 (ATV-Pre-Snapshot persistieren).** offen (gehört evtl. zu media_state,
-  Rollback-Szenario R7 — zuerst klären, wo der Snapshot lebt).
+- **Phase 4d — OQ-2 (ATV-Pre-Snapshot persistieren) ✅ (in media_state v0.7.0):** der
+  R7-Rollback-Snapshot lebt im **media_state**-Coordinator (`_pre_atv`) — dort via
+  `Store` (debounced) persistiert + beim Setup geladen. Nicht media_apply (Szenario-
+  Ableitung ist L1).
+
+**FLEET-40 ist damit vollständig** (R1/R3/R4/R12–R15, Ramps, R20-Restore, R13/R14
+Denon-Nachlauf, R24 Sleep-TV-Off, Radio-Port, OQ-2). Bleibt nur der Go-Live (Apply
+scharf) nach Abschluss aller übrigen Media-Karten.
 
 ## Konstanten (§6, alle konfigurierbar)
 16 Ramp-Schritte · 1s Schrittdelay · 0.02 Tiny-Delta · 0.10 Ducked · 90s/90s

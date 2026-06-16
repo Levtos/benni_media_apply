@@ -122,6 +122,9 @@ CONF_BIO_STATE: Final[str] = "bio_state_entity"
 # R12 — TV-WoL: aktives Output-Gerät (media_state) + TV-Player (turn_on + WebOS-State).
 CONF_MEDIA_DEVICE: Final[str] = "media_device_entity"
 CONF_TV_PLAYER: Final[str] = "tv_player_entity"
+# R24 — Sleep-TV-Off: Lichtschalter-Taste, deren Druck (State-Change) den Timer
+# um eine Runde verlängert. Optional; ungebunden = keine Verlängerung möglich.
+CONF_SLEEP_TV_EXTEND: Final[str] = "sleep_tv_extend_entity"
 
 # Keys, deren gebundene Entities der Coordinator beobachtet (event-driven).
 WATCH_KEYS: Final[tuple[str, ...]] = (
@@ -133,7 +136,7 @@ WATCH_KEYS: Final[tuple[str, ...]] = (
     CONF_RADIO_STATION, CONF_RADIO_READY, CONF_MANUAL_PLAYBACK,
     CONF_HOMEPODS_PLAYER, CONF_DENON_PLAYER, CONF_SUBWOOFER_SWITCH,
     CONF_PC_POWER, CONF_TV_POWER, CONF_DENON_POWER, CONF_BIO_STATE,
-    CONF_MEDIA_DEVICE, CONF_TV_PLAYER,
+    CONF_MEDIA_DEVICE, CONF_TV_PLAYER, CONF_SLEEP_TV_EXTEND,
 )
 ENTITY_SLOT_KEYS: Final[tuple[str, ...]] = WATCH_KEYS
 
@@ -242,6 +245,19 @@ DEFAULT_DENON_NACHLAUF_TV: Final[float] = 90.0
 # pflegbar, ohne YAML-Hardcode). Leer = nur turn_on (Leuchtfeuer sendet das Packet).
 CONF_TV_WOL_MAC: Final[str] = "tv_wol_mac"
 DEFAULT_TV_WOL_MAC: Final[str] = ""
+
+# Phase 3b — Sleep-TV-Off (R24). Sleep aktiv + TV läuft → nach delay Warnung auf
+# dem TV, dann (nach warn_lead) TV aus, sofern nicht verlängert (Lichtschalter).
+CONF_SLEEP_TV_OFF_DELAY: Final[str] = "sleep_tv_off_delay_seconds"
+CONF_SLEEP_TV_WARN_LEAD: Final[str] = "sleep_tv_warn_lead_seconds"
+CONF_SLEEP_TV_NOTIFY: Final[str] = "sleep_tv_notify_service"   # z.B. "notify.living_lgtv"
+CONF_SLEEP_TV_WARN_MESSAGE: Final[str] = "sleep_tv_warn_message"
+DEFAULT_SLEEP_TV_OFF_DELAY: Final[float] = 2700.0   # 45 min (Lastenheft R24)
+DEFAULT_SLEEP_TV_WARN_LEAD: Final[float] = 60.0     # Warnung 1 min vor Aus
+DEFAULT_SLEEP_TV_NOTIFY: Final[str] = ""            # leer = keine Warnung senden
+DEFAULT_SLEEP_TV_WARN_MESSAGE: Final[str] = (
+    "Sleep-Modus wird in 1 Minute aktiv, TV wird ausgeschaltet."
+)
 
 RAMP_SETTING_DEFAULTS: Final[dict[str, Any]] = {
     CONF_RAMP_STEPS: DEFAULT_RAMP_STEPS,
