@@ -78,6 +78,13 @@ PLAYER_OFF_VALUES: Final = ("off", "standby")
 # (TV direkt + Apple TV via HDMI). Bei Wechsel hierauf + TV aus → TV einschalten.
 SCREEN_DEVICES: Final = ("tv", "appletv")
 
+# R13/R14 — Denon-Konsumenten (media_device-Werte, die den Denon als Audio-Senke
+# brauchen). FLEET-80 Cross-Source-Gate: Solange media_device hier drin ist, ist
+# der geteilte Denon in Benutzung und der Nachlauf darf ihn NICHT ausschalten.
+# „denon" (Self — denon_active ist beim Abschalten per Definition true) sowie
+# „homepods" (separate Audio-Senke) und „none" zählen bewusst NICHT als Konsument.
+DENON_CONSUMER_DEVICES: Final = ("tv", "appletv", "ps5", "switch", "pc")
+
 # Bio-State (core_state), bei dem R14 pausiert (Sleep dominant).
 BIO_SLEEP_VALUE: Final = "sleep"
 # R23 — Wake-Übergang: bio_state-Werte, die als „wach" gelten. Der Eintritt in

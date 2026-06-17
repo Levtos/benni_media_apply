@@ -99,6 +99,7 @@ from .const import (
     DEFAULT_RAMP_STEP_DELAY,
     DEFAULT_RAMP_STEPS,
     DEFAULT_TINY_DELTA,
+    DENON_CONSUMER_DEVICES,
     DOMAIN,
     EXEC_DEBOUNCE,
     EXEC_IMMEDIATE,
@@ -281,6 +282,34 @@ class MediaApplyCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             return None
         return _bool(raw)
 
+    def _powered(self, key: str) -> Optional[bool]:
+        """Power-Wahrheit eines core_devices-Atomics: bevorzugt das `powered`-
+        Attribut (watt-primär, robust gegen Watt-Dips — z.B. dunkler OLED-Inhalt
+        bei Pause/Browse meldet `state: idle`, aber `powered: true`). Fallback auf
+        den State-String, falls kein Atomic gebunden ist. None = ungebunden/
+        unbekannt (FLEET-80: verhindert falsche Nachlauf-Arms auf „idle")."""
+        eid = self._entity_id(key)
+        if not eid:
+            return None
+        st = self.hass.states.get(eid)
+        if st is None or st.state in ("unknown", "unavailable"):
+            return None
+        powered = st.attributes.get("powered")
+        if isinstance(powered, bool):
+            return powered
+        return _bool(st.state)
+
+    def _denon_consumer_active(self) -> Optional[bool]:
+        """FLEET-80 Cross-Source-Gate: Ist ein Denon-Konsument (media_device ∈
+        DENON_CONSUMER_DEVICES) aktiv? `denon`/`homepods`/`none` zählen NICHT.
+        None wenn media_device ungebunden/unbekannt ⇒ konservativ (kein Off)."""
+        if not self._entity_id(CONF_MEDIA_DEVICE):
+            return None
+        md = self._state(CONF_MEDIA_DEVICE)   # None bei unknown/unavailable
+        if md is None:
+            return None
+        return md in DENON_CONSUMER_DEVICES
+
     def _denon_power_on(self) -> Optional[bool]:
         """Denon-Power: dediziertes Atomic bevorzugt (CONF_DENON_POWER, sobald
         nach #54 gebunden), sonst Ableitung aus dem bereits gebundenen
@@ -326,11 +355,14 @@ class MediaApplyCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             denon_volume=self._attr_float(CONF_DENON_PLAYER, "volume_level"),
             subwoofer_configured=bool(self._entity_id(CONF_SUBWOOFER_SWITCH)),
             subwoofer_state=self._state(CONF_SUBWOOFER_SWITCH),
-            # Phase 3 (R13/R14): None solange PC/TV-Power-Atomics ungebunden (#54).
-            pc_power_on=self._tri_bool(CONF_PC_POWER),
-            tv_power_on=self._tri_bool(CONF_TV_POWER),
+            # Phase 3 (R13/R14): watt-primäres `powered`-Attribut (FLEET-80) statt
+            # State-String — „idle" bei OLED-Watt-Dip darf nicht als aus zählen.
+            pc_power_on=self._powered(CONF_PC_POWER),
+            tv_power_on=self._powered(CONF_TV_POWER),
             denon_power_on=self._denon_power_on(),
             bio_sleep=self._bio_sleep(),
+            # FLEET-80 Cross-Source-Gate: anderer Denon-Konsument aktiv?
+            denon_consumer_active=self._denon_consumer_active(),
             # Phase 4c (R12 TV-WoL).
             media_device=self._state(CONF_MEDIA_DEVICE),
             tv_player_state=self._state(CONF_TV_PLAYER),
@@ -541,6 +573,7 @@ class MediaApplyCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 "pc_power_on": inp.pc_power_on,
                 "tv_power_on": inp.tv_power_on,
                 "bio_sleep": inp.bio_sleep,
+                "denon_consumer_active": inp.denon_consumer_active,
                 "tasks": sorted(self._nachlauf_tasks),
             },
             "tv_wol": {
@@ -957,7 +990,15 @@ class MediaApplyCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             self._nachlauf_state.tv_armed = False
             self._nachlauf_state.tv_paused = False
         if self.apply_enabled:
-            await self._denon_power_off(key)
+            # FLEET-80: finaler Konsumenten-Check am Ablauf (event-getriebener
+            # Cancel sollte schon gegriffen haben — doppelt safe gegen Races).
+            if self._denon_consumer_active() is True:
+                _LOGGER.info(
+                    "media_apply: Nachlauf %s abgelaufen, aber Denon-Konsument "
+                    "aktiv (media_device) → kein Off", key
+                )
+            else:
+                await self._denon_power_off(key)
         else:
             _LOGGER.debug(
                 "media_apply: Nachlauf %s abgelaufen (Shadow → kein Denon-Off)", key

@@ -79,6 +79,10 @@ class Inputs:
     tv_power_on: Optional[bool] = None
     denon_power_on: Optional[bool] = None
     bio_sleep: Optional[bool] = None
+    # FLEET-80 — Cross-Source-Gate: ist ein ANDERER Denon-Konsument (TV/ATV/PS5/
+    # Switch/PC) aktiv? Dann darf der Nachlauf den geteilten Denon NICHT
+    # ausschalten. None = unbekannt ⇒ konservativ wie „aktiv" (Denon bleibt an).
+    denon_consumer_active: Optional[bool] = None
     # Phase 4c (R12 TV-WoL). media_device = aktives Output-Gerät (media_state);
     # tv_player_state = WebOS-State (R11 primär). None = ungebunden/unbekannt.
     media_device: Optional[str] = None
@@ -446,7 +450,12 @@ def decide_denon_nachlauf(
 
     Arm-Bedingung verlangt EXPLIZIT power_on==False & denon_power_on==True;
     None (unbekannt/ungebunden) armt nie und bricht einen laufenden Timer ab
-    (kein Off-Schalten auf Basis fehlender Daten)."""
+    (kein Off-Schalten auf Basis fehlender Daten).
+
+    FLEET-80 Cross-Source-Gate: Der Denon ist eine GETEILTE Senke (PC/TV/ATV/
+    PS5/Switch). Ein Timer armt NUR, wenn KEIN anderer Konsument aktiv ist, und
+    wird gecancelt, sobald einer dazukommt (z.B. PC aus → TV an → R13 cancel).
+    `denon_consumer_active` None (unbekannt) zählt konservativ wie „aktiv"."""
     if state is None:
         state = NachlaufState()
     p = NachlaufPlan()
@@ -456,32 +465,38 @@ def decide_denon_nachlauf(
     )
     reasons: list[str] = []
     denon_on = inp.denon_power_on is True
+    # Ein anderer Denon-Konsument hält den geteilten Denon. None (unbekannt) ⇒
+    # konservativ wie „aktiv" → kein Off auf Basis fehlender Daten.
+    consumer_active = inp.denon_consumer_active is not False
 
     # ----- R13: PC-Aus (KANTEN-getriggert, FLEET-80) -----
-    # Armen NUR auf der Fallflanke PC an→aus bei laufendem Denon. Steady-State
-    # „PC aus" (Normalfall beim TV-Schauen) darf NICHT (re-)armen → kein 90s-Loop.
+    # Armen NUR auf der Fallflanke PC an→aus bei laufendem Denon UND ohne anderen
+    # Konsumenten. Steady-State „PC aus" (Normalfall beim TV-Schauen) darf NICHT
+    # (re-)armen → kein 90s-Loop.
     pc_off_edge = state.last_pc_on is True and inp.pc_power_on is False
-    pc_hold = inp.pc_power_on is False and denon_on   # hält den laufenden Timer
-    if pc_off_edge and denon_on and not ns.pc_armed:
+    # Hält den laufenden Timer: PC aus, Denon an, KEIN anderer Konsument. Kommt
+    # ein Konsument (z.B. TV) dazu, fällt pc_hold → der Timer wird gecancelt.
+    pc_hold = inp.pc_power_on is False and denon_on and not consumer_active
+    if pc_off_edge and denon_on and not consumer_active and not ns.pc_armed:
         p.pc = TIMER_ARM
         ns.pc_armed = True
         reasons.append("r13:arm_pc")
     elif ns.pc_armed and not pc_hold:
-        # PC zurück ODER Denon aus → Timer abbrechen.
+        # PC zurück, Denon aus ODER anderer Konsument aktiv → Timer abbrechen.
         p.pc = TIMER_CANCEL
         ns.pc_armed = False
         reasons.append("r13:cancel_pc")
 
     # ----- R14: TV-Aus (Sleep pausiert; KANTEN-getriggert) -----
     tv_off_edge = state.last_tv_on is True and inp.tv_power_on is False
-    tv_hold = inp.tv_power_on is False and denon_on
+    tv_hold = inp.tv_power_on is False and denon_on and not consumer_active
     if inp.bio_sleep is True:
         if ns.tv_armed and not ns.tv_paused:
             p.tv = TIMER_PAUSE
             ns.tv_paused = True
             reasons.append("r14:pause_sleep")
     else:
-        if tv_off_edge and denon_on and not ns.tv_armed:
+        if tv_off_edge and denon_on and not consumer_active and not ns.tv_armed:
             p.tv = TIMER_ARM
             ns.tv_armed = True
             ns.tv_paused = False

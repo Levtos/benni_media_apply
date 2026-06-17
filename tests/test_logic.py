@@ -227,8 +227,14 @@ def test_r20_no_snapshot_falls_back_to_phase1():
 # Phase 3 — Denon-Nachlauf (R13/R14)
 # ================================================================= #
 def _ninp(**kw):
-    """Inputs nur mit den Nachlauf-relevanten Feldern (Rest neutral)."""
-    base = dict(pc_power_on=None, tv_power_on=None, denon_power_on=None, bio_sleep=None)
+    """Inputs nur mit den Nachlauf-relevanten Feldern (Rest neutral).
+
+    `denon_consumer_active=False` ist der neutrale Default (kein anderer Denon-
+    Konsument) — FLEET-80-Gate-Tests setzen ihn explizit auf True."""
+    base = dict(
+        pc_power_on=None, tv_power_on=None, denon_power_on=None, bio_sleep=None,
+        denon_consumer_active=False,
+    )
     base.update(kw)
     return L.Inputs(**base)
 
@@ -350,6 +356,58 @@ def test_r14_paused_then_tv_returns_cancels_after_sleep():
     assert p.tv == L.TIMER_CANCEL
     assert s.tv_armed is False
     assert s.tv_paused is False
+
+
+# -------------------------------------------- FLEET-80 Cross-Source-Gate
+def test_r13_no_arm_when_other_consumer_active():
+    # Wurzel-Szenario letzte Nacht: PC-Aus-Flanke, aber der TV nutzt den Denon
+    # (media_device=tv → denon_consumer_active). R13 darf NICHT armen.
+    st = L.NachlaufState(last_pc_on=True)
+    p, s = L.decide_denon_nachlauf(
+        _ninp(pc_power_on=False, denon_power_on=True, denon_consumer_active=True), st
+    )
+    assert p.pc == L.TIMER_NONE
+    assert s.pc_armed is False
+
+
+def test_r13_cancel_when_consumer_becomes_active():
+    # R13 läuft, dann wird der TV aktiviert (braucht den Denon) → Timer cancel.
+    st = L.NachlaufState(pc_armed=True)
+    p, s = L.decide_denon_nachlauf(
+        _ninp(pc_power_on=False, denon_power_on=True, denon_consumer_active=True), st
+    )
+    assert p.pc == L.TIMER_CANCEL
+    assert s.pc_armed is False
+
+
+def test_r13_no_arm_when_consumer_unknown_conservative():
+    # media_device ungebunden/unbekannt (None) → konservativ wie „Konsument aktiv":
+    # kein Denon-Off auf Basis fehlender Daten.
+    st = L.NachlaufState(last_pc_on=True)
+    p, s = L.decide_denon_nachlauf(
+        _ninp(pc_power_on=False, denon_power_on=True, denon_consumer_active=None), st
+    )
+    assert p.pc == L.TIMER_NONE
+    assert s.pc_armed is False
+
+
+def test_r14_no_arm_when_other_consumer_active():
+    # TV-Aus-Flanke, aber der PC nutzt den Denon weiter (media_device=pc).
+    st = L.NachlaufState(last_tv_on=True)
+    p, s = L.decide_denon_nachlauf(
+        _ninp(tv_power_on=False, denon_power_on=True, denon_consumer_active=True), st
+    )
+    assert p.tv == L.TIMER_NONE
+    assert s.tv_armed is False
+
+
+def test_r14_cancel_when_consumer_becomes_active():
+    st = L.NachlaufState(tv_armed=True)
+    p, s = L.decide_denon_nachlauf(
+        _ninp(tv_power_on=False, denon_power_on=True, denon_consumer_active=True), st
+    )
+    assert p.tv == L.TIMER_CANCEL
+    assert s.tv_armed is False
 
 
 # ---------------------------------------------------------------- shared
