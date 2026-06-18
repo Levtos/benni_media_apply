@@ -49,6 +49,8 @@ from .const import (
     CONF_MEDIA_DEVICE,
     CONF_PC_POWER,
     CONF_PLANNED_STATION_PLAYING,
+    CONF_PRIVATE_MANUAL,
+    CONF_PRIVATE_MANUAL_TIMEOUT,
     CONF_PROFILE,
     CONF_QUIET_MODE,
     CONF_RADIO_AUTOSTART,
@@ -83,6 +85,7 @@ from .const import (
     DEFAULT_DENON_NACHLAUF_PC,
     DEFAULT_DENON_NACHLAUF_TV,
     DEFAULT_DUCKED_LEVEL,
+    DEFAULT_PRIVATE_MANUAL_TIMEOUT,
     DEFAULT_PROFILE,
     DEFAULT_RADIO_PLAY_DELAY,
     DEFAULT_RADIO_AUTOSTART,
@@ -149,6 +152,8 @@ class MediaApplyCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self._last_bio_state: str | None = None
         self._radio_resume_task: Optional[asyncio.Task] = None
         self._last_manual_playback: bool | None = None
+        self._private_task: Optional[asyncio.Task] = None   # FLEET-98 Timeout-Timer
+        self._last_private_manual: bool | None = None
         self._nachlauf_tasks: dict[str, asyncio.Task] = {}
         self._last_debug: dict[str, Any] = {}
         # Observability (FLEET-46): Ramp-Fortschritt + Apply-Log-Ringpuffer.
@@ -240,6 +245,7 @@ class MediaApplyCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self._cancel_sleep_tv()
         self._cancel_wake()
         self._cancel_radio_resume()
+        self._cancel_private_timeout()
         for key in list(self._nachlauf_tasks):
             self._cancel_nachlauf(key)
 
@@ -377,10 +383,11 @@ class MediaApplyCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             inputs, self._nachlauf_state
         )
         twol, self._tv_wol_state = logic.decide_tv_wol(inputs, self._tv_wol_state)
+        bio_to_awake, bio_to_sleep = self._bio_edges()
         edge_inp = replace(
             inputs,
             sleep_tv_extend_pressed=self._consume_extend_edge(),
-            wake_trigger_fired=self._wake_trigger_fired(),
+            wake_trigger_fired=self._wake_trigger_fired(bio_to_awake),
         )
         splan, self._sleep_tv_state = logic.decide_sleep_tv(edge_inp, self._sleep_tv_state)
         wplan = logic.decide_wake(edge_inp)
@@ -418,6 +425,8 @@ class MediaApplyCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             elif manual_off and inputs.action != ACTION_PAUSE and logic.should_autostart_radio(inputs):
                 # Trigger B: manuelle Wiedergabe endete → nach Delay fortsetzen.
                 self._schedule_radio_resume()
+        # FLEET-98: manuellen private_time-Latch auto-löschen (bio→sleep ODER Timeout).
+        self._handle_private_manual(bio_to_sleep)
         return {
             "last_action": plan.homepods_action,
             "homepods_target": plan.homepods_levels[-1] if plan.homepods_levels else None,
@@ -620,6 +629,12 @@ class MediaApplyCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 "planned_station_playing": inp.planned_station_playing,
                 "resume_pending": self._radio_resume_task is not None and not self._radio_resume_task.done(),
             },
+            # FLEET-98: manueller private_time-Latch + Auto-Clear-Status.
+            "private_manual": {
+                "active": self._tri_bool(CONF_PRIVATE_MANUAL),
+                "timeout_s": self._duration(CONF_PRIVATE_MANUAL_TIMEOUT, DEFAULT_PRIVATE_MANUAL_TIMEOUT),
+                "timeout_pending": self._private_task is not None and not self._private_task.done(),
+            },
             "bindings": self.bindings(),
         }
 
@@ -799,6 +814,56 @@ class MediaApplyCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             await self.async_play_radio(uri)
             _LOGGER.info("media_apply: FLEET-79 Radio-Resume (post-manual) → %s", uri)
 
+    # ----- private_time manueller Latch: Auto-Clear (FLEET-98) -----
+    @callback
+    def _handle_private_manual(self, bio_to_sleep: bool) -> None:
+        """Manuellen private_time-Latch (input_boolean) auto-löschen:
+        (a) bei bio→sleep (du schläfst = kein Dating/Besuch), (b) Fallback nach
+        Timeout. Beides apply-gated. on-Flanke startet den Timeout-Timer, off-Flanke
+        bricht ab. Nur EINMAL pro Tick (mutiert Vortick-State)."""
+        cur = self._tri_bool(CONF_PRIVATE_MANUAL)
+        prev = self._last_private_manual
+        self._last_private_manual = cur
+        if not self.apply_enabled:
+            return
+        if cur is True and bio_to_sleep:                 # (a) sleep-Clear (Primärpfad)
+            self._cancel_private_timeout()
+            self.hass.async_create_task(self._clear_private_manual("sleep"))
+        elif cur is True and prev is not True:           # on-Flanke → Timeout starten
+            self._schedule_private_timeout()
+        elif cur is not True and prev is True:           # off-Flanke → Timer aus
+            self._cancel_private_timeout()
+
+    @callback
+    def _schedule_private_timeout(self) -> None:
+        self._cancel_private_timeout()
+        timeout = self._duration(CONF_PRIVATE_MANUAL_TIMEOUT, DEFAULT_PRIVATE_MANUAL_TIMEOUT)
+        if timeout <= 0:                                  # 0 = nur sleep-Clear
+            return
+        self._private_task = self.hass.async_create_task(self._run_private_timeout(timeout))
+
+    @callback
+    def _cancel_private_timeout(self) -> None:
+        if self._private_task is not None and not self._private_task.done():
+            self._private_task.cancel()
+        self._private_task = None
+
+    async def _run_private_timeout(self, timeout: float) -> None:
+        try:
+            await asyncio.sleep(max(0.0, timeout))
+        except asyncio.CancelledError:
+            raise
+        self._private_task = None
+        if self.apply_enabled and self._tri_bool(CONF_PRIVATE_MANUAL) is True:
+            await self._clear_private_manual("timeout")
+
+    async def _clear_private_manual(self, reason: str) -> None:
+        ent = self._entity_id(CONF_PRIVATE_MANUAL)
+        if not ent:
+            return
+        _LOGGER.info("media_apply: FLEET-98 private_time-Latch auto-clear (%s) → %s", reason, ent)
+        await self._svc("homeassistant", "turn_off", {"entity_id": ent})
+
     async def _execute_tv_wol(self) -> None:
         """R12: TV einschalten. `media_player.turn_on` löst das webOS-„Leuchtfeuer"
         aus (bleibt 24/7); ist zusätzlich eine MAC konfiguriert, sendet media_apply
@@ -811,25 +876,22 @@ class MediaApplyCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             await self._svc("wake_on_lan", "send_magic_packet", {"mac": mac})
         _LOGGER.info("media_apply: R12 TV-WoL → turn_on %s (mac=%s)", tv, mac or "—")
 
-    # ----- Wake-Sequenz (R23) -----
-    def _wake_bio_edge(self) -> bool:
-        """Primärer Wake-Trigger (R23): bio_state-Eintritt in awake/waking aus einem
-        Nicht-Wach-Zustand. Quelle = core_state (keine Doppel-Detektion). Nur EINMAL
-        pro Tick (mutiert Vortick-State); Erststand zählt nicht als Übergang."""
+    # ----- Wake-Sequenz (R23) + bio-Flanken -----
+    def _bio_edges(self) -> tuple[bool, bool]:
+        """bio_state-Flanken (to_awake, to_sleep) aus core_state. EINMAL pro Tick
+        (mutiert Vortick-State); Erststand zählt nicht. to_awake = Eintritt in
+        awake/waking (Wake, R23); to_sleep = Eintritt in sleep (FLEET-98 private-Clear)."""
         cur = self._state(CONF_BIO_STATE)
         prev = self._last_bio_state
         self._last_bio_state = cur
-        return (
-            prev is not None
-            and prev not in BIO_AWAKE_VALUES
-            and cur in BIO_AWAKE_VALUES
-        )
+        to_awake = prev is not None and prev not in BIO_AWAKE_VALUES and cur in BIO_AWAKE_VALUES
+        to_sleep = prev is not None and prev != BIO_SLEEP_VALUE and cur == BIO_SLEEP_VALUE
+        return to_awake, to_sleep
 
-    def _wake_trigger_fired(self) -> bool:
-        """Wake-Flanke = bio_state-Übergang (primär) ODER steigende Flanke eines
-        optionalen Roh-Triggers (Multi-Entity, Default leer). Nur EINMAL pro Tick
-        aufrufen (mutiert Vortick-States)."""
-        fired = self._wake_bio_edge()
+    def _wake_trigger_fired(self, bio_to_awake: bool) -> bool:
+        """Wake-Flanke = bio→awake (primär) ODER steigende Flanke eines optionalen
+        Roh-Triggers (Multi-Entity, Default leer). Nur EINMAL pro Tick aufrufen."""
+        fired = bio_to_awake
         ents = self._entity_id(CONF_WAKE_TRIGGERS)
         if isinstance(ents, str):
             ents = [ents]

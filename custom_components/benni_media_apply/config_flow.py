@@ -25,6 +25,7 @@ from .const import (
     CONF_DENON_PLAYER,
     CONF_DUCKED_LEVEL,
     CONF_HOMEPODS_PLAYER,
+    CONF_PRIVATE_MANUAL_TIMEOUT,
     CONF_PROFILE,
     CONF_RADIO_AUTOSTART,
     CONF_RADIO_PLAY_DELAY,
@@ -51,6 +52,7 @@ from .const import (
     DEFAULT_PROFILE,
     DEFAULT_RADIO_AUTOSTART,
     DEFAULT_RADIO_PLAY_DELAY,
+    DEFAULT_PRIVATE_MANUAL_TIMEOUT,
     DEFAULT_RADIO_RESUME_DELAY,
     DEFAULT_RADIO_START_SCRIPT,
     DEFAULT_SLEEP_TV_NOTIFY,
@@ -111,6 +113,8 @@ _RAMP_FIELDS: dict[str, tuple[Any, Any]] = {
     # Phase 3b — Sleep-TV-Off (R24), Sekunden.
     CONF_SLEEP_TV_OFF_DELAY: (DEFAULT_SLEEP_TV_OFF_DELAY, vol.All(vol.Coerce(float), vol.Range(min=0.0, max=21600.0))),
     CONF_SLEEP_TV_WARN_LEAD: (DEFAULT_SLEEP_TV_WARN_LEAD, vol.All(vol.Coerce(float), vol.Range(min=0.0, max=600.0))),
+    # FLEET-98 — private_time manueller Latch: Auto-Clear-Timeout (0 = nur sleep).
+    CONF_PRIVATE_MANUAL_TIMEOUT: (DEFAULT_PRIVATE_MANUAL_TIMEOUT, vol.All(vol.Coerce(float), vol.Range(min=0.0, max=86400.0))),
     # R23 — Wake-Sequenz.
     CONF_WAKE_START_VOLUME: (DEFAULT_WAKE_START_VOLUME, vol.All(vol.Coerce(float), vol.Range(min=0.0, max=1.0))),
     CONF_WAKE_DEBOUNCE: (DEFAULT_WAKE_DEBOUNCE, vol.All(vol.Coerce(float), vol.Range(min=0.0, max=60.0))),
