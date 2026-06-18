@@ -134,6 +134,14 @@ Analyse-Stand 2026-06-11 (alter Layer: `einhornzentrale/packages/media/`):
   Neue Bindung `binary_sensor.media_radio_playing_planned_station`. 4 neue Tests (83 grün).
   YAML-Automationen #2/#3 danach löschen (Freigabe vor Live-YAML-Delete).
 
+- **private_time manueller Latch — Auto-Clear ✅ (0.14.0, FLEET-98):** der manuelle
+  `input_boolean.media_private_time_manual` hat einen Auto-Exit bekommen (vorher: einmal
+  an = bleibt an, blieb die ganze Nacht). **(a) bio→sleep** löscht ihn (du schläfst =
+  kein Dating/Besuch), **(b) Timeout** (`private_manual_timeout_seconds`, default 4h) als
+  Fallback. Beides apply-gated; on-Flanke startet den Timer, off-Flanke/Restart neu.
+  Stash-Auto-Pfad (media_state) unverändert. bio-Flanken zentral in `_bio_edges()`
+  (to_awake für R23-Wake, to_sleep für FLEET-98). `status().private_manual`. 89 grün.
+
 **FLEET-40 ist damit vollständig** (R1/R3/R4/R12–R15, Ramps, R20-Restore, R13/R14
 Denon-Nachlauf, R24 Sleep-TV-Off, Radio-Port, OQ-2). Bleibt nur der Go-Live (Apply
 scharf) nach Abschluss aller übrigen Media-Karten.
