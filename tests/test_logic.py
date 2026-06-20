@@ -450,6 +450,21 @@ def test_exec_mode_quiet_immediate_even_without_levels():
     assert L.execution_mode(p) == C.EXEC_IMMEDIATE
 
 
+def test_exec_mode_immediate_on_restore_quiet_end():
+    # FLEET-81: Quiet-Ende-Restore (is_restore, quiet_override schon False) muss
+    # SOFORT laufen — sonst hängt der Pegel nach Tür-zu das volle Debounce-Fenster
+    # auf ducked_target, bevor der Un-Duck landet.
+    p = L.ApplyPlan(execute=True, quiet_override=False, is_restore=True,
+                    denon_set=0.25, homepods_levels=[0.45])
+    assert L.execution_mode(p) == C.EXEC_IMMEDIATE
+
+
+def test_exec_mode_restore_immediate_shadow_still_wins():
+    # is_restore hebelt das Shadow-Gate NICHT aus (apply_enabled bleibt König).
+    p = L.ApplyPlan(execute=False, is_restore=True, denon_set=0.25)
+    assert L.execution_mode(p) == C.EXEC_SHADOW
+
+
 def test_has_work_true_for_each_actionable_field():
     assert L.ApplyPlan(homepods_action=C.ACTION_PAUSE).has_work is True
     assert L.ApplyPlan(homepods_levels=[0.3]).has_work is True

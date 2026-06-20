@@ -246,7 +246,12 @@ def execution_mode(plan: "ApplyPlan") -> str:
 
     - ``EXEC_SHADOW``: ``apply_enabled`` aus → gar nicht ausführen (nur Preview).
     - ``EXEC_IMMEDIATE``: Quiet-Mode bricht sofort durch — kein Debounce, der
-      laufende Ramp wird abgebrochen (R2/R3-Ausnahme).
+      laufende Ramp wird abgebrochen (R2/R3-Ausnahme). Gilt SYMMETRISCH auch für
+      den R20-Restore (``is_restore``, Quiet-Ende): das Un-Ducking muss so prompt
+      kommen wie das Ducking — sonst hängt der Pegel nach Tür-zu noch das volle
+      Debounce-Fenster auf ducked_target (FLEET-81). Der Restore setzt
+      ``quiet_override`` NICHT (sonst bräche `_execute` den Restore-Ramp ab), darum
+      hier die explizite is_restore-Ausnahme.
     - ``EXEC_DEBOUNCE``: Normalfall — Ausführung wartet das R2-Fenster ab, sodass
       ein Trigger-Burst zu EINER konsolidierten Aktion zusammenfällt.
 
@@ -254,7 +259,7 @@ def execution_mode(plan: "ApplyPlan") -> str:
     HA-freie Klassifikation (testbar)."""
     if not plan.execute:
         return EXEC_SHADOW
-    if plan.quiet_override:
+    if plan.quiet_override or plan.is_restore:
         return EXEC_IMMEDIATE
     return EXEC_DEBOUNCE
 
