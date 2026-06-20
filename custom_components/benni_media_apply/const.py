@@ -308,6 +308,12 @@ CONF_WAKE_START_VOLUME: Final[str] = "wake_start_volume"
 CONF_WAKE_DEBOUNCE: Final[str] = "wake_debounce_seconds"
 DEFAULT_WAKE_START_VOLUME: Final[float] = 0.10   # Lastenheft 20_helpers
 DEFAULT_WAKE_DEBOUNCE: Final[float] = 5.0
+# Race-Fix: bei Wake feuert der Radio-Autostart auf derselben Flanke wie die
+# Wake-Sequenz. Der Volume-Floor (0.10) wird blockierend gesetzt; dieser kurze
+# Vorlauf hält die Wiedergabe zurück, bis der Floor anliegt — sonst gibt der
+# HomePod einen Sekundenbruchteil bei alter (lauter) Lautstärke aus.
+CONF_WAKE_PLAY_LEAD: Final[str] = "wake_play_lead_seconds"
+DEFAULT_WAKE_PLAY_LEAD: Final[float] = 1.0
 
 RAMP_SETTING_DEFAULTS: Final[dict[str, Any]] = {
     CONF_RAMP_STEPS: DEFAULT_RAMP_STEPS,

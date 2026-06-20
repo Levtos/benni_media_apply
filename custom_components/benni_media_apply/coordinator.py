@@ -74,6 +74,7 @@ from .const import (
     CONF_TV_POWER,
     CONF_TV_WOL_MAC,
     CONF_WAKE_DEBOUNCE,
+    CONF_WAKE_PLAY_LEAD,
     CONF_WAKE_START_VOLUME,
     CONF_WAKE_TRIGGERS,
     CONF_VOL_TARGET_DENON,
@@ -98,6 +99,7 @@ from .const import (
     DEFAULT_SLEEP_TV_WARN_MESSAGE,
     DEFAULT_TV_WOL_MAC,
     DEFAULT_WAKE_DEBOUNCE,
+    DEFAULT_WAKE_PLAY_LEAD,
     DEFAULT_WAKE_START_VOLUME,
     DEFAULT_RAMP_STEP_DELAY,
     DEFAULT_RAMP_STEPS,
@@ -653,9 +655,11 @@ class MediaApplyCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         }
 
     # ----- execution (side effects) -----
-    async def _svc(self, domain: str, service: str, data: dict[str, Any]) -> None:
+    async def _svc(
+        self, domain: str, service: str, data: dict[str, Any], blocking: bool = False
+    ) -> None:
         try:
-            await self.hass.services.async_call(domain, service, data, blocking=False)
+            await self.hass.services.async_call(domain, service, data, blocking=blocking)
         except Exception as err:  # noqa: BLE001 — Geräte-Fehler dürfen Apply nicht crashen.
             _LOGGER.warning("media_apply: %s.%s %s failed: %s", domain, service, data, err)
 
@@ -775,6 +779,15 @@ class MediaApplyCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         latch = self._entity_id(CONF_STOP_LATCH)
         if latch:
             await self._svc("homeassistant", "turn_off", {"entity_id": latch})
+        # Race-Fix: Auf derselben Wake-Flanke setzt _run_wake parallel den
+        # Volume-Floor (0.10, blockierend). Kurzer Vorlauf, damit der Floor anliegt,
+        # bevor wir Ton ausgeben — sonst Burst bei alter Lautstärke (FLEET-42).
+        lead = self._duration(CONF_WAKE_PLAY_LEAD, DEFAULT_WAKE_PLAY_LEAD)
+        if lead > 0:
+            try:
+                await asyncio.sleep(lead)
+            except asyncio.CancelledError:
+                raise
         uri = logic.resolve_radio_uri(self._state(CONF_RADIO_STATION))
         if uri:
             await self.async_play_radio(uri)
@@ -929,7 +942,12 @@ class MediaApplyCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         start = round(max(0.0, min(1.0, s.wake_start_volume)), 3)
         try:
             self._cancel_ramp()
-            await self._svc("media_player", "volume_set", {"entity_id": hp, "volume_level": start})
+            # Race-Fix: Volume-Floor BLOCKIEREND setzen, damit er anliegt, bevor der
+            # (auf derselben Wake-Flanke gestartete) Radio-Autostart Ton ausgibt.
+            await self._svc(
+                "media_player", "volume_set",
+                {"entity_id": hp, "volume_level": start}, blocking=True,
+            )
             await asyncio.sleep(max(0.0, s.wake_debounce_seconds))
             target = self._float(CONF_VOL_TARGET_HOMEPODS)
             if target is None:
