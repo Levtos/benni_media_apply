@@ -52,9 +52,8 @@ Analyse-Stand 2026-06-11 (alter Layer: `einhornzentrale/packages/media/`):
   Coordinator-Countdown (abbrechbarer asyncio-Task pro Timer; Sleep pausiert
   den TV-Timer, Resume = Neustart). Expiry → `media_player.turn_off` Denon,
   gegatet durch `apply_enabled` (Shadow). Inputs `pc_power_on`/`tv_power_on`
-  als **DEFERRED Bindings** (PROFILE_PREFILL leer) bis FLEET-54 die core_devices-
-  Atomic-Slugs festklopft → bis dahin None ⇒ kein Arm (doppelt safe). `denon_power`
-  leitet sich notfalls aus dem Denon-media_player ab, `bio_state` aus core_state.
+  inzwischen aus Core-Devices-Mastern; `denon_power` leitet sich notfalls aus dem
+  Denon-media_player ab, `bio_state` aus core_state.
   Observability: `binary_sensor …_denon_nachlauf_active`. 21 neue pure-logic-Tests.
   **FLEET-80-Fix (0.13.1):** Armen jetzt KANTEN-getriggert (Fallflanke PC/TV an→aus,
   `last_pc_on`/`last_tv_on`). Vorher armte der Steady-State „PC aus" (Normalfall beim

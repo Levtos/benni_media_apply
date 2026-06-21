@@ -70,7 +70,7 @@ PLAYER_PLAYING_VALUES: Final = ("playing",)
 # Zustände, in denen ein Volume-Set sinnvoll ist (nicht unknown/unavailable/off).
 PLAYER_ADDRESSABLE_VALUES: Final = ("playing", "idle", "paused", "on", "buffering")
 # media_player/AVR-Zustände, die als "ausgeschaltet" gelten (Denon-Power-Ableitung,
-# falls kein dediziertes Power-Atomic gebunden ist). Gilt auch für die TV-Power
+# falls keine dedizierte Denon-Power-Quelle gebunden ist). Gilt auch für die TV-Power
 # (R11: WebOS off/standby = aus).
 PLAYER_OFF_VALUES: Final = ("off", "standby")
 
@@ -124,11 +124,10 @@ CONF_SUBWOOFER_SWITCH: Final[str] = "subwoofer_switch_entity"
 
 # --------------------------------------------------------------------------- #
 # Phase 3 (R13/R14 Denon-Nachlauf) — Geräte-Power-Inputs.
-# PC-/TV-Power sind core_devices-Atomics, die FLEET-54 gerade migriert → Bindings
-# bleiben hier DEFERRED (PROFILE_PREFILL leer), bis die Atomic-Slugs feststehen.
-# Bis dahin liefern sie None ⇒ die Nachlauf-Timer armen nie (no-op, doppelt safe
-# zusätzlich zum Shadow-Gate). Denon-Power leitet sich notfalls aus dem bereits
-# gebundenen CONF_DENON_PLAYER ab; bio_state kommt aus core_state (stabil).
+# PC-/TV-Power kommen aus Core-Devices-Mastern. _powered() liest bevorzugt
+# `powered`, dann `is_active`/`watt_active`, dann den bool-kompatiblen State.
+# Denon-Power leitet sich notfalls aus dem bereits gebundenen CONF_DENON_PLAYER
+# ab; bio_state kommt aus core_state (stabil).
 # --------------------------------------------------------------------------- #
 CONF_PC_POWER: Final[str] = "pc_power_entity"
 CONF_TV_POWER: Final[str] = "tv_power_entity"
@@ -185,13 +184,10 @@ PROFILE_PREFILL: Final[dict[str, dict[str, Any]]] = {
         CONF_HOMEPODS_PLAYER: "media_player.living_homepods_ma_group",
         CONF_DENON_PLAYER: "media_player.living_denon",
         CONF_SUBWOOFER_SWITCH: "switch.living_subwoofer_plug",
-        # Phase 3 — DEFERRED bis FLEET-54 die Atomic-Slugs festklopft (leer = no-op).
-        # Kandidaten (zur Bindung nach #54): PC-Power-Atomic, TV-Power-Atomic
-        # (WebOS/Wattage, R11), denon_power → binary_sensor.living_denon_plug_power_active_atomic,
-        # bio_state → sensor.<...>_core_state_bio_state.
-        # Post-FLEET-54: an core_devices/core_state gebunden (Denon-Nachlauf R13/R14).
-        CONF_PC_POWER: "sensor.benni_device_living_pc",
-        CONF_TV_POWER: "sensor.benni_device_living_tv",
+        # Post-FLEET-54: an Core-Devices-Master/core_state gebunden
+        # (Denon-Nachlauf R13/R14).
+        CONF_PC_POWER: "sensor.benni_master_pc",
+        CONF_TV_POWER: "sensor.benni_master_tv",
         CONF_DENON_POWER: "",  # leer = aus Denon-Player abgeleitet (sicherer als avr-Statemix)
         CONF_BIO_STATE: "sensor.benni_core_state_bio_state",
         # R12 — TV-WoL.
@@ -205,6 +201,11 @@ PROFILE_PREFILL: Final[dict[str, dict[str, Any]]] = {
         CONF_PRIVATE_MANUAL: "input_boolean.media_private_time_manual",
     },
     PROFILE_ELTERN: {},
+}
+
+LEGACY_ENTITY_MAP: Final[dict[str, str]] = {
+    "sensor.benni_device_living_pc": "sensor.benni_master_pc",
+    "sensor.benni_device_living_tv": "sensor.benni_master_tv",
 }
 
 # --------------------------------------------------------------------------- #

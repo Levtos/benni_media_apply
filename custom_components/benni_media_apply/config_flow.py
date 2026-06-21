@@ -67,6 +67,7 @@ from .const import (
     DEFAULT_TINY_DELTA,
     DOMAIN,
     ENTITY_SLOT_KEYS,
+    LEGACY_ENTITY_MAP,
     NAME,
     PROFILE_LABELS,
     PROFILE_PREFILL,
@@ -84,6 +85,14 @@ _PLAYER_KEYS = (CONF_HOMEPODS_PLAYER, CONF_DENON_PLAYER, CONF_TV_PLAYER)
 _SWITCH_KEYS = (CONF_SUBWOOFER_SWITCH,)
 _MULTI = selector.EntitySelector(selector.EntitySelectorConfig(multiple=True))
 _MULTI_KEYS = (CONF_WAKE_TRIGGERS,)
+
+
+def _normalize_entity_value(value: Any) -> Any:
+    if isinstance(value, str):
+        return LEGACY_ENTITY_MAP.get(value, value)
+    if isinstance(value, list):
+        return [LEGACY_ENTITY_MAP.get(item, item) if isinstance(item, str) else item for item in value]
+    return value
 
 
 def _selector_for(key: str) -> Any:
@@ -167,7 +176,7 @@ def _entity_overrides(profile: str, user_input: dict[str, Any]) -> dict[str, Any
     code = PROFILE_PREFILL.get(profile, {})
     out: dict[str, Any] = {}
     for key in ENTITY_SLOT_KEYS:
-        v = user_input.get(key)
+        v = _normalize_entity_value(user_input.get(key))
         if v and v != code.get(key):
             out[key] = v
     return out
@@ -177,7 +186,7 @@ def _override_or_map(profile: str, data: dict[str, Any]) -> dict[str, Any]:
     code = PROFILE_PREFILL.get(profile, {})
     out: dict[str, Any] = {}
     for key in ENTITY_SLOT_KEYS:
-        v = data.get(key) or code.get(key)
+        v = _normalize_entity_value(data.get(key)) or code.get(key)
         if v:
             out[key] = v
     return out
@@ -198,7 +207,7 @@ def _profile_schema(default: str) -> vol.Schema:
 
 
 class MediaApplyConfigFlow(ConfigFlow, domain=DOMAIN):
-    VERSION = 1
+    VERSION = 2
 
     def __init__(self) -> None:
         self._profile: str = DEFAULT_PROFILE

@@ -291,10 +291,9 @@ class MediaApplyCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         return _bool(raw)
 
     def _powered(self, key: str) -> Optional[bool]:
-        """Power-Wahrheit eines core_devices-Atomics: bevorzugt das `powered`-
-        Attribut (watt-primär, robust gegen Watt-Dips — z.B. dunkler OLED-Inhalt
-        bei Pause/Browse meldet `state: idle`, aber `powered: true`). Fallback auf
-        den State-String, falls kein Atomic gebunden ist. None = ungebunden/
+        """Power-Wahrheit eines core_devices-Geräts: bevorzugt Attribute
+        (`powered`, `is_active`, `watt_active`) und fällt dann auf den
+        bool-kompatiblen State zurück. None = ungebunden/
         unbekannt (FLEET-80: verhindert falsche Nachlauf-Arms auf „idle")."""
         eid = self._entity_id(key)
         if not eid:
@@ -302,9 +301,12 @@ class MediaApplyCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         st = self.hass.states.get(eid)
         if st is None or st.state in ("unknown", "unavailable"):
             return None
-        powered = st.attributes.get("powered")
-        if isinstance(powered, bool):
-            return powered
+        for attr in ("powered", "is_active", "watt_active"):
+            value = st.attributes.get(attr)
+            if isinstance(value, bool):
+                return value
+            if value is not None:
+                return _bool(str(value))
         return _bool(st.state)
 
     def _denon_consumer_active(self) -> Optional[bool]:

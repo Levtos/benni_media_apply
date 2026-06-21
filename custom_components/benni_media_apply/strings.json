@@ -32,7 +32,11 @@
           "wake_trigger_entities": "Wake-Trigger (R23, mehrere: Kaffee/Fenster/PS5/PC/Private — NICHT TV/ATV)",
           "homepods_player_entity": "HomePods · Media-Player (MA-Gruppe)",
           "denon_player_entity": "Denon · Media-Player",
-          "subwoofer_switch_entity": "Subwoofer · Plug (switch)"
+          "subwoofer_switch_entity": "Subwoofer · Plug (switch)",
+          "pc_power_entity": "PC · Master",
+          "tv_power_entity": "TV · Master",
+          "denon_power_entity": "Denon · Power (optional)",
+          "bio_state_entity": "Bio State (core_state)"
         }
       },
       "options": {
@@ -95,7 +99,11 @@
           "wake_trigger_entities": "Wake-Trigger (R23, mehrere: Kaffee/Fenster/PS5/PC/Private — NICHT TV/ATV)",
           "homepods_player_entity": "HomePods · Media-Player (MA-Gruppe)",
           "denon_player_entity": "Denon · Media-Player",
-          "subwoofer_switch_entity": "Subwoofer · Plug (switch)"
+          "subwoofer_switch_entity": "Subwoofer · Plug (switch)",
+          "pc_power_entity": "PC · Master",
+          "tv_power_entity": "TV · Master",
+          "denon_power_entity": "Denon · Power (optional)",
+          "bio_state_entity": "Bio State (core_state)"
         }
       },
       "options": {
