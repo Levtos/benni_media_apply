@@ -114,6 +114,10 @@ class ApplyState:
     pre_quiet_denon: Optional[float] = None
     last_homepods_target: Optional[float] = None  # Vortick-Target (Quelle des Snapshots)
     last_denon_target: Optional[float] = None
+    # Zuletzt an den Denon GESETZTER Pegel. Idempotenz-Anker für den watt-primären
+    # Pfad (Player meldet stale "off" ⇒ Ist-Volume nicht lesbar): verhindert, dass
+    # bei jedem Watt-Report derselbe Pegel neu geschrieben wird (Volume-OSD-Flackern).
+    applied_denon: Optional[float] = None
 
 
 @dataclass
@@ -293,6 +297,7 @@ def decide_apply(
         # bleibt der Pre-Quiet-Wert eingefroren (sonst ginge er auf 0.10 verloren).
         last_homepods_target=inp.homepods_target if not inp.quiet_mode else state.last_homepods_target,
         last_denon_target=inp.denon_target if not inp.quiet_mode else state.last_denon_target,
+        applied_denon=state.applied_denon,
     )
     if quiet_entry:
         # Snapshot des Pre-Quiet-Targets (der Vortick-Wert, vor dem Ducking).
@@ -344,7 +349,10 @@ def decide_apply(
             if (
                 inp.denon_configured
                 and new_state.pre_quiet_denon is not None
-                and inp.denon_state in PLAYER_ADDRESSABLE_VALUES
+                and (
+                    inp.denon_state in PLAYER_ADDRESSABLE_VALUES
+                    or inp.denon_power_on is True
+                )
             ):
                 d = _direct(inp.denon_volume, new_state.pre_quiet_denon)
                 p.denon_set = d[0] if d else None
@@ -370,14 +378,22 @@ def decide_apply(
                     p.homepods_ramp = len(p.homepods_levels) > 1
                 if p.homepods_levels:
                     reasons.append("volume:homepods_ramp" if p.homepods_ramp else "volume:homepods_direct")
-            # Denon: immer hart (kein Ramp), idempotent.
-            if (
-                inp.denon_configured
-                and inp.denon_target is not None
-                and inp.denon_state in PLAYER_ADDRESSABLE_VALUES
-            ):
-                denon = _direct(inp.denon_volume, inp.denon_target)
-                p.denon_set = denon[0] if denon else None
+            # Denon: immer hart (kein Ramp), idempotent. Gate watt-primär (FLEET-80-
+            # Analogie für die Apply-Schicht): adressierbarer Player ODER physisch
+            # aktiv (`denon_power_on`, an den watt-Master gebunden). Der denonavr-
+            # Player meldet im Betrieb oft stale "off" (assumed-state, vgl. FLEET-83)
+            # — dann ist das Ist-Volume nicht lesbar (`denon_volume` None), also nur
+            # auf echte Ziel-Änderung schreiben (Anker `applied_denon`), sonst würde
+            # jeder Watt-Report denselben Pegel neu setzen (Volume-OSD-Flackern).
+            if inp.denon_configured and inp.denon_target is not None:
+                if inp.denon_state in PLAYER_ADDRESSABLE_VALUES:
+                    denon = _direct(inp.denon_volume, inp.denon_target)
+                    p.denon_set = denon[0] if denon else None
+                elif inp.denon_power_on is True and (
+                    state.applied_denon is None
+                    or not _eq(inp.denon_target, state.applied_denon)
+                ):
+                    p.denon_set = round(_clamp(inp.denon_target, 0.0, 1.0), 3)
                 if p.denon_set is not None:
                     reasons.append("volume:denon_set")
     else:
@@ -387,6 +403,10 @@ def decide_apply(
     if quiet_exit:
         new_state.pre_quiet_homepods = None
         new_state.pre_quiet_denon = None
+
+    # Idempotenz-Anker für den watt-primären Denon-Pfad fortschreiben (s.o.).
+    if p.denon_set is not None:
+        new_state.applied_denon = p.denon_set
 
     # ----- Subwoofer (idempotent on/off) -----
     if inp.subwoofer_configured and inp.subwoofer_state in ("on", "off"):

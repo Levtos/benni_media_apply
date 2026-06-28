@@ -151,6 +151,48 @@ def test_denon_idempotent():
     assert p.denon_set is None
 
 
+# --- watt-primärer Gate: Player meldet stale "off", aber Denon ist physisch an ---
+def test_denon_watt_primary_sets_when_player_off():
+    # denonavr-Player "off" + kein lesbares Ist (volume None), aber watt-Master aktiv.
+    p = _plan(_inp(denon_state="off", denon_volume=None, denon_target=0.2,
+                   denon_power_on=True))
+    assert p.denon_set == 0.2
+
+
+def test_denon_off_and_not_powered_no_set():
+    # Player "off" UND watt-Master inaktiv → kein Apply (echtes Aus).
+    p = _plan(_inp(denon_state="off", denon_volume=None, denon_target=0.2,
+                   denon_power_on=False))
+    assert p.denon_set is None
+
+
+def test_denon_watt_primary_unknown_power_no_set():
+    # denon_power_on None (ungebunden/unbekannt) ⇒ konservativ kein Apply bei "off".
+    p = _plan(_inp(denon_state="off", denon_volume=None, denon_target=0.2,
+                   denon_power_on=None))
+    assert p.denon_set is None
+
+
+def test_denon_watt_primary_idempotent_on_unchanged_target():
+    # Bereits gesetzter Pegel (applied_denon=0.2) + Player off ⇒ kein Re-Set bei
+    # jedem Watt-Report (verhindert Volume-OSD-Flackern).
+    st = L.ApplyState(applied_denon=0.2)
+    p = _plan(_inp(denon_state="off", denon_volume=None, denon_target=0.2,
+                   denon_power_on=True), st)
+    assert p.denon_set is None
+
+
+def test_denon_watt_primary_resets_on_target_change():
+    # Ziel ändert sich ggü. dem zuletzt gesetzten Pegel → ein Schreibvorgang.
+    st = L.ApplyState(applied_denon=0.2)
+    p, s = L.decide_apply(
+        _inp(denon_state="off", denon_volume=None, denon_target=0.25,
+             denon_power_on=True), st
+    )
+    assert p.denon_set == 0.25
+    assert s.applied_denon == 0.25
+
+
 # ----------------------------------------------------------------- Subwoofer
 def test_subwoofer_turn_on():
     p = _plan(_inp(subwoofer_state="off", subwoofer_allowed=True))

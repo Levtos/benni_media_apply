@@ -188,7 +188,10 @@ PROFILE_PREFILL: Final[dict[str, dict[str, Any]]] = {
         # (Denon-Nachlauf R13/R14).
         CONF_PC_POWER: "sensor.benni_master_pc",
         CONF_TV_POWER: "sensor.benni_master_tv",
-        CONF_DENON_POWER: "",  # leer = aus Denon-Player abgeleitet (sicherer als avr-Statemix)
+        # Watt-primärer Master (is_active), konsistent mit pc/tv. Der denonavr-Player
+        # meldet im Betrieb oft stale "off" (assumed-state, FLEET-83-Muster) → watt
+        # ist die Power-Wahrheit für Apply-Gate (Volume) UND Nachlauf (R13/R14).
+        CONF_DENON_POWER: "sensor.benni_master_denon",
         CONF_BIO_STATE: "sensor.benni_core_state_bio_state",
         # R12 — TV-WoL.
         CONF_MEDIA_DEVICE: "sensor.benni_media_state_media_device",
