@@ -739,3 +739,65 @@ def test_radio_defaults_shape_and_sort():
     assert names == sorted(names)
     # jeder Eintrag trägt die korrekte URI aus dem Katalog
     assert all(s["uri"] == C.RADIO_CATALOG[s["key"]] for s in d)
+
+
+# ------------------------------------------------ Presence / Away-Gate (FLEET-212)
+def test_away_gate_blocks_music_baseline_volume():
+    p = _plan(_inp(away_gate=True, homepods_target=0.5, denon_target=0.4))
+    assert p.homepods_levels == []
+    assert p.denon_set is None
+    assert "away_gate:away_gate" in p.reasons
+
+
+def test_away_gate_pauses_homepods_and_turns_denon_off():
+    p = _plan(_inp(away_gate=True, homepods_state="playing",
+                   denon_state="on", denon_power_on=True,
+                   subwoofer_state="on"))
+    assert p.homepods_action == C.ACTION_PAUSE
+    assert p.denon_action == C.ACTION_DENON_OFF
+    assert p.subwoofer_set is False
+
+
+def test_away_gate_execution_is_immediate():
+    p = _plan(_inp(away_gate=True, homepods_state="playing"))
+    assert L.execution_mode(p) == C.EXEC_IMMEDIATE
+
+
+def test_away_gate_blocks_radio_restart():
+    inp = L.Inputs(
+        away_gate=True,
+        radio_ready=True,
+        manual_playback=False,
+        planned_station_playing=False,
+    )
+    assert L.should_autostart_radio(inp) is False
+
+
+def test_home_presence_allows_radio_restart_again():
+    inp = L.Inputs(
+        presence_state="zuhause",
+        radio_ready=True,
+        manual_playback=False,
+        planned_station_playing=False,
+    )
+    assert L.should_autostart_radio(inp) is True
+
+
+def test_presence_unknown_blocks_autostart_defensively():
+    inp = L.Inputs(
+        presence_state="unknown",
+        radio_ready=True,
+        manual_playback=False,
+        planned_station_playing=False,
+    )
+    assert L.should_autostart_radio(inp) is False
+
+
+def test_presence_degraded_blocks_wake_sequence():
+    p = L.decide_wake(L.Inputs(
+        wake_trigger_fired=True,
+        bio_sleep=False,
+        presence_degraded=True,
+    ))
+    assert p.fire is False
+    assert "r23:suppressed_away_gate" in p.reasons
