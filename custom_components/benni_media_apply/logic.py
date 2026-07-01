@@ -14,7 +14,7 @@ Restore (R20), Denon-Nachlauf (R13/R14), Sleep-Off (R24/R25) folgen.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any, Final, Optional
 
 from .const import (
@@ -214,6 +214,23 @@ def resolve_radio_uri(station: Optional[str]) -> Optional[str]:
     if not station:
         return None
     return RADIO_CATALOG.get(station)
+
+
+def suppress_start_radio_action(plan: ApplyPlan, reason: str) -> ApplyPlan:
+    """Return a copy with only the radio-start action removed.
+
+    Used by the HA-bound coordinator for edge guards: a restored level state
+    (`action=start_radio` already present at startup) must not restart the
+    stream, while the volume target may still be exposed/applied idempotently.
+    """
+    if plan.homepods_action != ACTION_START_RADIO:
+        return plan
+    return replace(
+        plan,
+        homepods_action=ACTION_NONE,
+        radio_uri=None,
+        reasons=[*plan.reasons, reason],
+    )
 
 
 def should_autostart_radio(inp: "Inputs") -> bool:

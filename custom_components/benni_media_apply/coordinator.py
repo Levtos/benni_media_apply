@@ -36,7 +36,6 @@ from .const import (
     CONF_ACTION,
     CONF_APPLY_ENABLED,
     CONF_AWAY_GATE,
-    CONF_AUDIO_OWNER,
     CONF_BIO_STATE,
     CONF_DEBOUNCE_SECONDS,
     CONF_DENON_NACHLAUF_PC,
@@ -83,7 +82,6 @@ from .const import (
     CONF_VOL_TARGET_DENON,
     CONF_VOL_TARGET_HOMEPODS,
     CONF_VOLUME_APPLY_ALLOWED,
-    CONF_VOLUME_POLICY,
     DEFAULT_APPLY_ENABLED,
     DEFAULT_DEBOUNCE_SECONDS,
     DEFAULT_DENON_NACHLAUF_PC,
@@ -109,7 +107,6 @@ from .const import (
     DEFAULT_TINY_DELTA,
     DENON_CONSUMER_DEVICES,
     DOMAIN,
-    EXEC_DEBOUNCE,
     EXEC_IMMEDIATE,
     EXEC_SHADOW,
     PLAYER_OFF_VALUES,
@@ -157,6 +154,7 @@ class MediaApplyCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self._last_bio_state: str | None = None
         self._radio_resume_task: Optional[asyncio.Task] = None
         self._last_manual_playback: bool | None = None
+        self._last_homepods_action: str | None = None
         self._private_task: Optional[asyncio.Task] = None   # FLEET-98 Timeout-Timer
         self._last_private_manual: bool | None = None
         self._nachlauf_tasks: dict[str, asyncio.Task] = {}
@@ -394,6 +392,15 @@ class MediaApplyCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         plan, self._apply_state = logic.decide_apply(
             inputs, self._apply_state, self.settings()
         )
+        previous_homepods_action = self._last_homepods_action
+        self._last_homepods_action = plan.homepods_action
+        if (
+            plan.homepods_action == ACTION_START_RADIO
+            and previous_homepods_action in (None, ACTION_START_RADIO)
+        ):
+            plan = logic.suppress_start_radio_action(
+                plan, "startup_or_repeated:start_radio_suppressed"
+            )
         nplan, self._nachlauf_state = logic.decide_denon_nachlauf(
             inputs, self._nachlauf_state
         )

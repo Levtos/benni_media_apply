@@ -566,6 +566,27 @@ def test_start_radio_unknown_station_no_uri_falls_back():
     assert p.radio_uri is None
 
 
+def test_suppress_start_radio_action_removes_only_radio_start():
+    p = L.ApplyPlan(
+        execute=True,
+        homepods_action=C.ACTION_START_RADIO,
+        homepods_levels=[0.45],
+        radio_uri=C.RADIO_CATALOG["gayfm"],
+        reasons=["action:start_radio"],
+    )
+    out = L.suppress_start_radio_action(p, "startup_or_repeated:start_radio_suppressed")
+    assert out.homepods_action == C.ACTION_NONE
+    assert out.radio_uri is None
+    assert out.homepods_levels == [0.45]
+    assert "startup_or_repeated:start_radio_suppressed" in out.reasons
+    assert p.homepods_action == C.ACTION_START_RADIO
+
+
+def test_suppress_start_radio_action_leaves_other_actions_untouched():
+    p = L.ApplyPlan(execute=True, homepods_action=C.ACTION_PAUSE)
+    assert L.suppress_start_radio_action(p, "x") is p
+
+
 # ------------------------------------------------- Phase 4c: TV-WoL (R12)
 def _twol(**kw):
     base = dict(media_device=None, tv_player_state=None, tv_power_on=None)
