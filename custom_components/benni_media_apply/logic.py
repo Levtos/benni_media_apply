@@ -18,6 +18,7 @@ from dataclasses import dataclass, field
 from typing import Any, Final, Optional
 
 from .const import (
+    ACTION_DENON_OFF,
     ACTION_NONE,
     ACTION_PAUSE,
     ACTION_RESUME,
@@ -59,6 +60,9 @@ class Inputs:
     subwoofer_allowed: bool = False
     # aus media_state:
     quiet_mode: bool = False
+    presence_state: Optional[str] = None
+    presence_degraded: bool = False
+    away_gate: Optional[bool] = None
     stop_latch: bool = False
     # Radio (Phase 4b). None = ungebunden/unbekannt ⇒ non-regressiv (erlauben).
     radio_station: Optional[str] = None
@@ -126,10 +130,12 @@ class ApplyPlan:
 
     execute: bool = False                  # apply_enabled (globaler Gate)
     homepods_action: str = ACTION_NONE     # pause/play/start_radio/none
+    denon_action: str = ACTION_NONE        # currently: turn_off_denon
     homepods_levels: list = field(default_factory=list)  # Volume-Set-Sequenz
     homepods_ramp: bool = False            # True = gestuft (Ramp-Task), False = direkt
     denon_set: Optional[float] = None      # harter Set-Wert (None = no-op)
     subwoofer_set: Optional[bool] = None   # True/False/None (None = no-op)
+    away_block: bool = False
     quiet_override: bool = False           # Quiet → direkt, laufenden Ramp abbrechen
     is_restore: bool = False               # R20: Quiet-Ende → Ramp-Up auf Pre-Quiet
     radio_uri: Optional[str] = None        # aufgelöster Sender-URI (start_radio inline)
@@ -142,6 +148,7 @@ class ApplyPlan:
         neu starten — sonst hungert ein gepufferter echter Plan aus."""
         return bool(
             self.homepods_action != ACTION_NONE
+            or self.denon_action != ACTION_NONE
             or self.homepods_levels
             or self.denon_set is not None
             or self.subwoofer_set is not None
@@ -151,10 +158,12 @@ class ApplyPlan:
         return {
             "execute": self.execute,
             "homepods_action": self.homepods_action,
+            "denon_action": self.denon_action,
             "homepods_target": self.homepods_levels[-1] if self.homepods_levels else None,
             "homepods_ramp": self.homepods_ramp,
             "denon_target": self.denon_set,
             "subwoofer_set": self.subwoofer_set,
+            "away_block": self.away_block,
             "quiet_override": self.quiet_override,
             "is_restore": self.is_restore,
             "radio_uri": self.radio_uri,
@@ -214,10 +223,23 @@ def should_autostart_radio(inp: "Inputs") -> bool:
     Flanke) sowie das Latch-Lösen liegen im Coordinator. None (ungebunden) = blockt
     (radio_ready muss explizit True sein → kein Autostart ohne validen Sender)."""
     return (
-        inp.radio_ready is True
+        media_block_reason(inp) is None
+        and inp.radio_ready is True
         and inp.manual_playback is not True
         and inp.planned_station_playing is not True
     )
+
+
+def media_block_reason(inp: Inputs) -> Optional[str]:
+    """Highest-priority absence/presence block for automatic apply paths."""
+    if inp.away_gate is True:
+        return "away_gate"
+    presence = (inp.presence_state or "").strip().lower()
+    if presence == "abwesend":
+        return "presence_away"
+    if presence == "unknown" or inp.presence_degraded:
+        return "presence_unknown"
+    return None
 
 
 def radio_defaults() -> list[dict[str, str]]:
@@ -263,7 +285,7 @@ def execution_mode(plan: "ApplyPlan") -> str:
     HA-freie Klassifikation (testbar)."""
     if not plan.execute:
         return EXEC_SHADOW
-    if plan.quiet_override or plan.is_restore:
+    if plan.quiet_override or plan.is_restore or plan.away_block:
         return EXEC_IMMEDIATE
     return EXEC_DEBOUNCE
 
@@ -303,6 +325,28 @@ def decide_apply(
         # Snapshot des Pre-Quiet-Targets (der Vortick-Wert, vor dem Ducking).
         new_state.pre_quiet_homepods = state.last_homepods_target
         new_state.pre_quiet_denon = state.last_denon_target
+
+    block_reason = media_block_reason(inp)
+    if block_reason:
+        p.away_block = True
+        reasons.append(f"away_gate:{block_reason}")
+        if inp.homepods_configured and inp.homepods_state in PLAYER_PLAYING_VALUES:
+            p.homepods_action = ACTION_PAUSE
+            reasons.append("action:pause_away")
+        denon_on = (
+            inp.denon_power_on is True
+            or (inp.denon_state is not None and inp.denon_state not in PLAYER_OFF_VALUES)
+        )
+        if inp.denon_configured and denon_on:
+            p.denon_action = ACTION_DENON_OFF
+            reasons.append("action:denon_off_away")
+        if inp.subwoofer_configured and inp.subwoofer_state == "on":
+            p.subwoofer_set = False
+            reasons.append("subwoofer:off_away")
+        if not p.execute:
+            reasons.append("shadow:apply_disabled")
+        p.reasons = reasons
+        return p, new_state
 
     # ----- HomePods-Action (geräte-zustands-idempotent) -----
     hp_playing = inp.homepods_state in PLAYER_PLAYING_VALUES
@@ -681,6 +725,9 @@ def decide_wake(inp: "Inputs") -> WakePlan:
     (= nicht sleep) sind erlaubt (KH-4). Stateless: Flankenerkennung im Coordinator."""
     p = WakePlan()
     if not inp.wake_trigger_fired:
+        return p
+    if media_block_reason(inp):
+        p.reasons.append("r23:suppressed_away_gate")
         return p
     if inp.bio_sleep is True:
         p.reasons.append("r23:suppressed_sleep")

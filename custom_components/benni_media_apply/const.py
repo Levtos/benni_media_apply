@@ -59,6 +59,7 @@ ACTION_NONE: Final = "none"
 ACTION_PAUSE: Final = "pause_homepods"
 ACTION_RESUME: Final = "resume_homepods"
 ACTION_START_RADIO: Final = "start_radio"
+ACTION_DENON_OFF: Final = "turn_off_denon"
 
 # Ausführungs-Modus pro Tick (R2/R3): wie der berechnete Plan zum Gerät kommt.
 EXEC_SHADOW: Final = "shadow"        # apply_enabled aus → gar nicht ausführen.
@@ -107,6 +108,8 @@ CONF_SUBWOOFER_ALLOWED: Final[str] = "subwoofer_allowed_entity"
 CONF_VOLUME_APPLY_ALLOWED: Final[str] = "volume_apply_allowed_entity"
 # aus media_state:
 CONF_QUIET_MODE: Final[str] = "quiet_mode_entity"
+CONF_PRESENCE_STATE: Final[str] = "presence_state_entity"
+CONF_AWAY_GATE: Final[str] = "away_gate_entity"
 # Stop-Latch (shared Helper):
 CONF_STOP_LATCH: Final[str] = "stop_latch_entity"
 # Radio (Phase 4b — Katalog-Port aus script.media_radio_start):
@@ -150,7 +153,7 @@ WATCH_KEYS: Final[tuple[str, ...]] = (
     CONF_VOL_TARGET_HOMEPODS, CONF_VOL_TARGET_DENON,
     CONF_HOMEPODS_SHOULD_PAUSE, CONF_HOMEPODS_RESUME_ALLOWED,
     CONF_SUBWOOFER_ALLOWED, CONF_VOLUME_APPLY_ALLOWED,
-    CONF_QUIET_MODE, CONF_STOP_LATCH,
+    CONF_QUIET_MODE, CONF_PRESENCE_STATE, CONF_AWAY_GATE, CONF_STOP_LATCH,
     CONF_RADIO_STATION, CONF_RADIO_READY, CONF_MANUAL_PLAYBACK,
     CONF_PLANNED_STATION_PLAYING,
     CONF_HOMEPODS_PLAYER, CONF_DENON_PLAYER, CONF_SUBWOOFER_SWITCH,
@@ -176,6 +179,8 @@ PROFILE_PREFILL: Final[dict[str, dict[str, Any]]] = {
         CONF_SUBWOOFER_ALLOWED: "binary_sensor.benni_media_policy_subwoofer_allowed",
         CONF_VOLUME_APPLY_ALLOWED: "binary_sensor.benni_media_policy_volume_apply_allowed",
         CONF_QUIET_MODE: "binary_sensor.benni_media_state_quiet_mode",
+        CONF_PRESENCE_STATE: "sensor.benni_media_state_presence_state",
+        CONF_AWAY_GATE: "binary_sensor.benni_media_state_away_gate",
         CONF_STOP_LATCH: "input_boolean.media_stop_latch",
         CONF_RADIO_STATION: "input_select.media_radio_station",
         CONF_RADIO_READY: "binary_sensor.media_radio_ready",

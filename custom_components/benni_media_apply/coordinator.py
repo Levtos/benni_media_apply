@@ -27,6 +27,7 @@ from homeassistant.util import dt as dt_util
 from . import logic
 from .const import (
     ACTION_NONE,
+    ACTION_DENON_OFF,
     ACTION_PAUSE,
     ACTION_RESUME,
     ACTION_START_RADIO,
@@ -34,6 +35,7 @@ from .const import (
     BIO_SLEEP_VALUE,
     CONF_ACTION,
     CONF_APPLY_ENABLED,
+    CONF_AWAY_GATE,
     CONF_AUDIO_OWNER,
     CONF_BIO_STATE,
     CONF_DEBOUNCE_SECONDS,
@@ -49,6 +51,7 @@ from .const import (
     CONF_MEDIA_DEVICE,
     CONF_PC_POWER,
     CONF_PLANNED_STATION_PLAYING,
+    CONF_PRESENCE_STATE,
     CONF_PRIVATE_MANUAL,
     CONF_PRIVATE_MANUAL_TIMEOUT,
     CONF_PROFILE,
@@ -352,6 +355,10 @@ class MediaApplyCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             denon_target=self._float(CONF_VOL_TARGET_DENON),
             subwoofer_allowed=_bool(self._state(CONF_SUBWOOFER_ALLOWED)),
             quiet_mode=_bool(self._state(CONF_QUIET_MODE)),
+            presence_state=self._state(CONF_PRESENCE_STATE),
+            presence_degraded=bool(self._entity_id(CONF_PRESENCE_STATE))
+            and self._state(CONF_PRESENCE_STATE) is None,
+            away_gate=self._tri_bool(CONF_AWAY_GATE),
             stop_latch=_bool(self._state(CONF_STOP_LATCH)),
             radio_station=self._state(CONF_RADIO_STATION),
             radio_ready=self._tri_bool(CONF_RADIO_READY),
@@ -380,6 +387,10 @@ class MediaApplyCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
     def _compute(self) -> dict[str, Any]:
         inputs = self._build_inputs()
+        media_blocked = logic.media_block_reason(inputs) is not None
+        if media_blocked:
+            self._cancel_radio_resume()
+            self._cancel_wake()
         plan, self._apply_state = logic.decide_apply(
             inputs, self._apply_state, self.settings()
         )
@@ -422,7 +433,7 @@ class MediaApplyCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             self._schedule_wake()
         # FLEET-79 Radio-Autostart (Port der disabled YAML-Automationen).
         manual_off = self._manual_off_edge()
-        if self.apply_enabled and self._radio_autostart_enabled:
+        if self.apply_enabled and self._radio_autostart_enabled and not media_blocked:
             if wplan.fire and logic.should_autostart_radio(inputs):
                 # Trigger A: Wake → Latch lösen + geplante Station starten.
                 self.hass.async_create_task(self._run_radio_autostart())
@@ -670,7 +681,7 @@ class MediaApplyCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         denon = self._entity_id(CONF_DENON_PLAYER)
         sub = self._entity_id(CONF_SUBWOOFER_SWITCH)
 
-        if plan.quiet_override:
+        if plan.quiet_override or plan.away_block:
             self._cancel_ramp()
 
         # ----- HomePods-Action -----
@@ -716,6 +727,10 @@ class MediaApplyCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 "media_player", "volume_set",
                 {"entity_id": denon, "volume_level": plan.denon_set},
             )
+
+        # ----- Denon-Aktion -----
+        if plan.denon_action == ACTION_DENON_OFF and denon:
+            await self._svc("media_player", "turn_off", {"entity_id": denon})
 
         # ----- Subwoofer-Plug -----
         if plan.subwoofer_set is not None and sub:
@@ -790,6 +805,8 @@ class MediaApplyCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 await asyncio.sleep(lead)
             except asyncio.CancelledError:
                 raise
+        if not logic.should_autostart_radio(self._build_inputs()):
+            return
         uri = logic.resolve_radio_uri(self._state(CONF_RADIO_STATION))
         if uri:
             await self.async_play_radio(uri)
@@ -951,6 +968,8 @@ class MediaApplyCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 {"entity_id": hp, "volume_level": start}, blocking=True,
             )
             await asyncio.sleep(max(0.0, s.wake_debounce_seconds))
+            if logic.media_block_reason(self._build_inputs()):
+                return
             target = self._float(CONF_VOL_TARGET_HOMEPODS)
             if target is None:
                 return
