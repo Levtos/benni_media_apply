@@ -154,7 +154,7 @@ class MediaApplyCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self._last_bio_state: str | None = None
         self._radio_resume_task: Optional[asyncio.Task] = None
         self._last_manual_playback: bool | None = None
-        self._last_homepods_action: str | None = None
+        self._startup_start_radio_guard = True
         self._private_task: Optional[asyncio.Task] = None   # FLEET-98 Timeout-Timer
         self._last_private_manual: bool | None = None
         self._nachlauf_tasks: dict[str, asyncio.Task] = {}
@@ -392,14 +392,13 @@ class MediaApplyCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         plan, self._apply_state = logic.decide_apply(
             inputs, self._apply_state, self.settings()
         )
-        previous_homepods_action = self._last_homepods_action
-        self._last_homepods_action = plan.homepods_action
-        if (
-            plan.homepods_action == ACTION_START_RADIO
-            and previous_homepods_action in (None, ACTION_START_RADIO)
+        startup_start_radio_guard = self._startup_start_radio_guard
+        self._startup_start_radio_guard = False
+        if logic.should_suppress_start_radio_at_startup(
+            plan.homepods_action, startup_start_radio_guard
         ):
             plan = logic.suppress_start_radio_action(
-                plan, "startup_or_repeated:start_radio_suppressed"
+                plan, "startup:start_radio_suppressed"
             )
         nplan, self._nachlauf_state = logic.decide_denon_nachlauf(
             inputs, self._nachlauf_state
