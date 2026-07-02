@@ -52,8 +52,6 @@ from .const import (
     CONF_PC_POWER,
     CONF_PLANNED_STATION_PLAYING,
     CONF_PRESENCE_STATE,
-    CONF_PRIVATE_MANUAL,
-    CONF_PRIVATE_MANUAL_TIMEOUT,
     CONF_PROFILE,
     CONF_QUIET_MODE,
     CONF_RADIO_AUTOSTART,
@@ -88,7 +86,6 @@ from .const import (
     DEFAULT_DENON_NACHLAUF_PC,
     DEFAULT_DENON_NACHLAUF_TV,
     DEFAULT_DUCKED_LEVEL,
-    DEFAULT_PRIVATE_MANUAL_TIMEOUT,
     DEFAULT_PROFILE,
     DEFAULT_RADIO_PLAY_DELAY,
     DEFAULT_RADIO_AUTOSTART,
@@ -159,8 +156,6 @@ class MediaApplyCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         # STARTUP_RADIO_GATE_SECONDS unterdrückt — ein HA-Neustart darf den
         # Radio-Stream nicht neu starten, während die HomePods restoren.
         self._startup_monotonic = time.monotonic()
-        self._private_task: Optional[asyncio.Task] = None   # FLEET-98 Timeout-Timer
-        self._last_private_manual: bool | None = None
         self._nachlauf_tasks: dict[str, asyncio.Task] = {}
         self._last_debug: dict[str, Any] = {}
         # Observability (FLEET-46): Ramp-Fortschritt + Apply-Log-Ringpuffer.
@@ -252,7 +247,6 @@ class MediaApplyCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self._cancel_sleep_tv()
         self._cancel_wake()
         self._cancel_radio_resume()
-        self._cancel_private_timeout()
         for key in list(self._nachlauf_tasks):
             self._cancel_nachlauf(key)
 
@@ -406,7 +400,7 @@ class MediaApplyCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             inputs, self._nachlauf_state
         )
         twol, self._tv_wol_state = logic.decide_tv_wol(inputs, self._tv_wol_state)
-        bio_to_awake, bio_to_sleep = self._bio_edges()
+        bio_to_awake, _ = self._bio_edges()   # sleep-Edge nur noch für media_state relevant
         edge_inp = replace(
             inputs,
             sleep_tv_extend_pressed=self._consume_extend_edge(),
@@ -448,8 +442,9 @@ class MediaApplyCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             elif manual_off and inputs.action != ACTION_PAUSE and logic.should_autostart_radio(inputs):
                 # Trigger B: manuelle Wiedergabe endete → nach Delay fortsetzen.
                 self._schedule_radio_resume()
-        # FLEET-98: manuellen private_time-Latch auto-löschen (bio→sleep ODER Timeout).
-        self._handle_private_manual(bio_to_sleep)
+        # FLEET-44/98: der manuelle private_time-Latch + seine Auto-Löschung
+        # leben jetzt nativ in media_state (switch-Entität) — apply verwaltet
+        # ihn nicht mehr.
         return {
             "last_action": plan.homepods_action,
             "homepods_target": plan.homepods_levels[-1] if plan.homepods_levels else None,
@@ -652,12 +647,7 @@ class MediaApplyCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 "planned_station_playing": inp.planned_station_playing,
                 "resume_pending": self._radio_resume_task is not None and not self._radio_resume_task.done(),
             },
-            # FLEET-98: manueller private_time-Latch + Auto-Clear-Status.
-            "private_manual": {
-                "active": self._tri_bool(CONF_PRIVATE_MANUAL),
-                "timeout_s": self._duration(CONF_PRIVATE_MANUAL_TIMEOUT, DEFAULT_PRIVATE_MANUAL_TIMEOUT),
-                "timeout_pending": self._private_task is not None and not self._private_task.done(),
-            },
+            # FLEET-44/98: private_time-Latch lebt jetzt nativ in media_state.
             "bindings": self.bindings(),
         }
 
@@ -853,56 +843,6 @@ class MediaApplyCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         if uri:
             await self.async_play_radio(uri)
             _LOGGER.info("media_apply: FLEET-79 Radio-Resume (post-manual) → %s", uri)
-
-    # ----- private_time manueller Latch: Auto-Clear (FLEET-98) -----
-    @callback
-    def _handle_private_manual(self, bio_to_sleep: bool) -> None:
-        """Manuellen private_time-Latch (input_boolean) auto-löschen:
-        (a) bei bio→sleep (du schläfst = kein Dating/Besuch), (b) Fallback nach
-        Timeout. Beides apply-gated. on-Flanke startet den Timeout-Timer, off-Flanke
-        bricht ab. Nur EINMAL pro Tick (mutiert Vortick-State)."""
-        cur = self._tri_bool(CONF_PRIVATE_MANUAL)
-        prev = self._last_private_manual
-        self._last_private_manual = cur
-        if not self.apply_enabled:
-            return
-        if cur is True and bio_to_sleep:                 # (a) sleep-Clear (Primärpfad)
-            self._cancel_private_timeout()
-            self.hass.async_create_task(self._clear_private_manual("sleep"))
-        elif cur is True and prev is not True:           # on-Flanke → Timeout starten
-            self._schedule_private_timeout()
-        elif cur is not True and prev is True:           # off-Flanke → Timer aus
-            self._cancel_private_timeout()
-
-    @callback
-    def _schedule_private_timeout(self) -> None:
-        self._cancel_private_timeout()
-        timeout = self._duration(CONF_PRIVATE_MANUAL_TIMEOUT, DEFAULT_PRIVATE_MANUAL_TIMEOUT)
-        if timeout <= 0:                                  # 0 = nur sleep-Clear
-            return
-        self._private_task = self.hass.async_create_task(self._run_private_timeout(timeout))
-
-    @callback
-    def _cancel_private_timeout(self) -> None:
-        if self._private_task is not None and not self._private_task.done():
-            self._private_task.cancel()
-        self._private_task = None
-
-    async def _run_private_timeout(self, timeout: float) -> None:
-        try:
-            await asyncio.sleep(max(0.0, timeout))
-        except asyncio.CancelledError:
-            raise
-        self._private_task = None
-        if self.apply_enabled and self._tri_bool(CONF_PRIVATE_MANUAL) is True:
-            await self._clear_private_manual("timeout")
-
-    async def _clear_private_manual(self, reason: str) -> None:
-        ent = self._entity_id(CONF_PRIVATE_MANUAL)
-        if not ent:
-            return
-        _LOGGER.info("media_apply: FLEET-98 private_time-Latch auto-clear (%s) → %s", reason, ent)
-        await self._svc("homeassistant", "turn_off", {"entity_id": ent})
 
     async def _execute_tv_wol(self) -> None:
         """R12: TV einschalten. `media_player.turn_on` löst das webOS-„Leuchtfeuer"

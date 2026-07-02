@@ -117,9 +117,8 @@ CONF_RADIO_STATION: Final[str] = "radio_station_entity"        # input_select (S
 CONF_RADIO_READY: Final[str] = "radio_ready_entity"            # binary_sensor (Sender gültig)
 CONF_MANUAL_PLAYBACK: Final[str] = "manual_playback_entity"    # binary_sensor (manuell aktiv)
 CONF_PLANNED_STATION_PLAYING: Final[str] = "planned_station_playing_entity"  # binary_sensor (geplante Station läuft)
-# FLEET-98 — manueller private_time-Latch (input_boolean), wird auto-gelöscht bei
-# bio→sleep ODER nach Timeout (Apply schreibt; media_state liest ihn als Trigger).
-CONF_PRIVATE_MANUAL: Final[str] = "private_manual_entity"
+# FLEET-44/98: Der manuelle private_time-Latch + seine Auto-Löschung leben jetzt
+# nativ in media_state (switch-Entität) — apply verwaltet ihn nicht mehr.
 # Geräte (Apply-Targets):
 CONF_HOMEPODS_PLAYER: Final[str] = "homepods_player_entity"
 CONF_DENON_PLAYER: Final[str] = "denon_player_entity"
@@ -159,7 +158,7 @@ WATCH_KEYS: Final[tuple[str, ...]] = (
     CONF_HOMEPODS_PLAYER, CONF_DENON_PLAYER, CONF_SUBWOOFER_SWITCH,
     CONF_PC_POWER, CONF_TV_POWER, CONF_DENON_POWER, CONF_BIO_STATE,
     CONF_MEDIA_DEVICE, CONF_TV_PLAYER, CONF_SLEEP_TV_EXTEND,
-    CONF_WAKE_TRIGGERS, CONF_PRIVATE_MANUAL,
+    CONF_WAKE_TRIGGERS,
 )
 ENTITY_SLOT_KEYS: Final[tuple[str, ...]] = WATCH_KEYS
 
@@ -205,8 +204,6 @@ PROFILE_PREFILL: Final[dict[str, dict[str, Any]]] = {
         # (CONF_BIO_STATE, core_state). Diese Liste ist nur ein OPTIONALer Zusatz
         # (z.B. Private-Time-Helper), Default leer → keine Indikator-Doppel-Detektion.
         CONF_WAKE_TRIGGERS: [],
-        # FLEET-98 — manueller private_time-Latch (Auto-Clear bei sleep/Timeout).
-        CONF_PRIVATE_MANUAL: "input_boolean.media_private_time_manual",
     },
     PROFILE_ELTERN: {},
 }
@@ -303,11 +300,6 @@ DEFAULT_SLEEP_TV_NOTIFY: Final[str] = "notify.lg_webos_tv_oled77c47la"  # benni-
 DEFAULT_SLEEP_TV_WARN_MESSAGE: Final[str] = (
     "Sleep-Modus wird in 1 Minute aktiv, TV wird ausgeschaltet."
 )
-
-# FLEET-98 — manueller private_time-Latch: Auto-Clear-Timeout (Fallback neben
-# bio→sleep). Default 4h. 0 = kein Timeout (nur sleep-Clear).
-CONF_PRIVATE_MANUAL_TIMEOUT: Final[str] = "private_manual_timeout_seconds"
-DEFAULT_PRIVATE_MANUAL_TIMEOUT: Final[float] = 14400.0   # 4 h
 
 # R23 — Wake-Sequenz. HomePods starten bei start_volume, nach debounce auf das
 # media_policy-Ziel rampen. KH-3 (Wecker-Hook = separate Alarm-Lautstärke) ist
