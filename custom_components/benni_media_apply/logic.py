@@ -233,6 +233,11 @@ def suppress_start_radio_action(plan: ApplyPlan, reason: str) -> ApplyPlan:
     )
 
 
+def should_suppress_start_radio_at_startup(action: str, startup_guard: bool) -> bool:
+    """True only for the first HA-bound compute that already sees start_radio."""
+    return startup_guard and action == ACTION_START_RADIO
+
+
 def should_autostart_radio(inp: "Inputs") -> bool:
     """FLEET-79: Gate für den Radio-Autostart (Wake / Resume). Nur wenn ein gültiger
     Sender bereit ist (`radio_ready` True), KEINE manuelle Wiedergabe läuft und die

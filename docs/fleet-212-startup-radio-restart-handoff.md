@@ -37,18 +37,40 @@ Release: `benni_media_apply v0.14.7`
 - Nur die Radio-Start-Side-Effect wird entfernt; Volume-Targets bleiben sichtbar
   und idempotent.
 
+## Folgekorrektur v0.14.8
+
+Benni hat nach `v0.14.7` beobachtet, dass Musik auch bei spaeteren legitimen
+Wake-/Baseline-Triggern nicht mehr startet. Ursache: Der Guard war zu breit und
+unterdrueckte nicht nur den HA-Startup-Fall, sondern auch ein dauerhaft
+anliegendes `action=start_radio` aus `media_policy`.
+
+Fix in `benni_media_apply v0.14.8`:
+
+- `start_radio` wird nur beim ersten Coordinator-Compute nach Apply-Start
+  unterdrueckt.
+- Danach darf ein weiterhin anliegendes `action=start_radio` wieder ausgefuehrt
+  werden, damit Kaffee-/Tuer-/Wake-Trigger und die Home-Baseline die Musik
+  reparieren koennen.
+- Volume-Targets bleiben auch beim Startup-Guard sichtbar/idempotent.
+
+Dieser Hotfix korrigiert die Regression aus `v0.14.7`; Claude sollte bei der
+naechsten Grooming-Runde pruefen, ob ein expliziter Startup-Stabilitaetsstatus
+aus `media_state`/HA-Boot besser waere als ein rein lokaler First-Compute-Guard.
+
 ## PR / Release
 
 - PR: https://github.com/Levtos/benni_media_apply/pull/16
 - Release: https://github.com/Levtos/benni_media_apply/releases/tag/v0.14.7
 - Fix commit: `19f4a74c309934f6b07f7608a478e37fbf3f09d4`
 - Merge: `bf5015bb07dd7b0c089ee196e089f3a91b652392`
+- Follow-up: `benni_media_apply v0.14.8`
 
 ## Gates
 
 - `python -m pytest`: 107 passed.
 - `python -m compileall -q custom_components tests`: green.
 - `python -m ruff check .`: green.
+- `v0.14.8`: Gates erneut im Release-PR dokumentieren.
 
 ## Live Verification For Claude
 
@@ -73,5 +95,6 @@ on 2026-07-01. When Plane access is restored, update/create the FLEET card:
 - Owner: Claude Code
 - State: `Testing` until live-verified, then `Live`.
 - Summary: `benni_media_apply v0.14.7` makes `start_radio` edge-triggered in
-  Apply so restored startup state cannot restart the stream.
+  Apply so restored startup state cannot restart the stream. `v0.14.8`
+  narrows that guard to startup-only so normal later starts work again.
 

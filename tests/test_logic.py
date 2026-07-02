@@ -574,17 +574,23 @@ def test_suppress_start_radio_action_removes_only_radio_start():
         radio_uri=C.RADIO_CATALOG["gayfm"],
         reasons=["action:start_radio"],
     )
-    out = L.suppress_start_radio_action(p, "startup_or_repeated:start_radio_suppressed")
+    out = L.suppress_start_radio_action(p, "startup:start_radio_suppressed")
     assert out.homepods_action == C.ACTION_NONE
     assert out.radio_uri is None
     assert out.homepods_levels == [0.45]
-    assert "startup_or_repeated:start_radio_suppressed" in out.reasons
+    assert "startup:start_radio_suppressed" in out.reasons
     assert p.homepods_action == C.ACTION_START_RADIO
 
 
 def test_suppress_start_radio_action_leaves_other_actions_untouched():
     p = L.ApplyPlan(execute=True, homepods_action=C.ACTION_PAUSE)
     assert L.suppress_start_radio_action(p, "x") is p
+
+
+def test_should_suppress_start_radio_only_on_startup_guard():
+    assert L.should_suppress_start_radio_at_startup(C.ACTION_START_RADIO, True) is True
+    assert L.should_suppress_start_radio_at_startup(C.ACTION_START_RADIO, False) is False
+    assert L.should_suppress_start_radio_at_startup(C.ACTION_PAUSE, True) is False
 
 
 # ------------------------------------------------- Phase 4c: TV-WoL (R12)
