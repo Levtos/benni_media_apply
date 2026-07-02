@@ -233,9 +233,25 @@ def suppress_start_radio_action(plan: ApplyPlan, reason: str) -> ApplyPlan:
     )
 
 
-def should_suppress_start_radio_at_startup(action: str, startup_guard: bool) -> bool:
-    """True only for the first HA-bound compute that already sees start_radio."""
-    return startup_guard and action == ACTION_START_RADIO
+# Startup settling window: a HA restart is not a media event. While the
+# HomePods flap through their idle→playing restore (empirisch ~10 s), the policy
+# already re-asserts the music baseline (`action=start_radio`, seit media_policy
+# v0.12.2 ein Dauer-Level). Executing it would restart an already-resuming
+# stream. Suppress start_radio for a fixed window after Apply-Start; the
+# HomePods auto-resume on their own inside it.
+STARTUP_RADIO_GATE_SECONDS: Final = 30.0
+
+
+def should_suppress_start_radio_at_startup(
+    action: str,
+    seconds_since_start: float,
+    window_s: float = STARTUP_RADIO_GATE_SECONDS,
+) -> bool:
+    """True while within the post-startup settling window and the plan wants
+    start_radio. Time-based (not first-compute-only): the harmful start_radio
+    arrives a few seconds into boot, once presence resolves and the HomePods are
+    still transiently idle — after the literal first compute."""
+    return action == ACTION_START_RADIO and seconds_since_start < window_s
 
 
 def should_autostart_radio(inp: "Inputs") -> bool:

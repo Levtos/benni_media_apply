@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from collections import deque
 from dataclasses import replace
 from typing import Any, Optional
@@ -154,7 +155,10 @@ class MediaApplyCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self._last_bio_state: str | None = None
         self._radio_resume_task: Optional[asyncio.Task] = None
         self._last_manual_playback: bool | None = None
-        self._startup_start_radio_guard = True
+        # Startup-Window (monotone Apply-Start-Zeit): start_radio wird die ersten
+        # STARTUP_RADIO_GATE_SECONDS unterdrückt — ein HA-Neustart darf den
+        # Radio-Stream nicht neu starten, während die HomePods restoren.
+        self._startup_monotonic = time.monotonic()
         self._private_task: Optional[asyncio.Task] = None   # FLEET-98 Timeout-Timer
         self._last_private_manual: bool | None = None
         self._nachlauf_tasks: dict[str, asyncio.Task] = {}
@@ -392,13 +396,11 @@ class MediaApplyCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         plan, self._apply_state = logic.decide_apply(
             inputs, self._apply_state, self.settings()
         )
-        startup_start_radio_guard = self._startup_start_radio_guard
-        self._startup_start_radio_guard = False
         if logic.should_suppress_start_radio_at_startup(
-            plan.homepods_action, startup_start_radio_guard
+            plan.homepods_action, time.monotonic() - self._startup_monotonic
         ):
             plan = logic.suppress_start_radio_action(
-                plan, "startup:start_radio_suppressed"
+                plan, "startup_window:start_radio_suppressed"
             )
         nplan, self._nachlauf_state = logic.decide_denon_nachlauf(
             inputs, self._nachlauf_state

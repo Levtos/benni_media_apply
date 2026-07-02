@@ -587,10 +587,28 @@ def test_suppress_start_radio_action_leaves_other_actions_untouched():
     assert L.suppress_start_radio_action(p, "x") is p
 
 
-def test_should_suppress_start_radio_only_on_startup_guard():
-    assert L.should_suppress_start_radio_at_startup(C.ACTION_START_RADIO, True) is True
-    assert L.should_suppress_start_radio_at_startup(C.ACTION_START_RADIO, False) is False
-    assert L.should_suppress_start_radio_at_startup(C.ACTION_PAUSE, True) is False
+def test_start_radio_suppressed_inside_startup_window():
+    # Inside the settling window a HA restart must not restart the stream, even
+    # a few seconds in (after the literal first compute).
+    assert L.should_suppress_start_radio_at_startup(C.ACTION_START_RADIO, 0.0) is True
+    assert L.should_suppress_start_radio_at_startup(C.ACTION_START_RADIO, 7.0) is True
+    assert L.should_suppress_start_radio_at_startup(
+        C.ACTION_START_RADIO, L.STARTUP_RADIO_GATE_SECONDS - 0.1
+    ) is True
+
+
+def test_start_radio_allowed_after_startup_window():
+    # Once settled, a genuine start_radio edge must go through again.
+    assert L.should_suppress_start_radio_at_startup(
+        C.ACTION_START_RADIO, L.STARTUP_RADIO_GATE_SECONDS
+    ) is False
+    assert L.should_suppress_start_radio_at_startup(C.ACTION_START_RADIO, 120.0) is False
+
+
+def test_startup_window_only_gates_start_radio():
+    # Other actions are never touched by the startup window.
+    assert L.should_suppress_start_radio_at_startup(C.ACTION_PAUSE, 0.0) is False
+    assert L.should_suppress_start_radio_at_startup(C.ACTION_NONE, 1.0) is False
 
 
 # ------------------------------------------------- Phase 4c: TV-WoL (R12)
