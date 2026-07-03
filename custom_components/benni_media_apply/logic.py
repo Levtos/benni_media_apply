@@ -302,6 +302,26 @@ def execution_mode(plan: "ApplyPlan") -> str:
     return EXEC_DEBOUNCE
 
 
+def debounce_decision(plan: "ApplyPlan", window_active: bool) -> tuple[bool, bool]:
+    """R2/R3 Pending-Buchführung für den EXEC_DEBOUNCE-Fall (pure). Return
+    ``(update_pending, restart_window)``.
+
+    - Echter Plan (``has_work``) → puffern UND das Fenster (neu) anstoßen.
+    - No-Op-Plan bei LAUFENDEM Fenster → gepufferten Plan trotzdem auf diesen
+      Stand bringen, damit eine inzwischen ÜBERHOLTE Aktion nicht doch noch
+      ausgeführt wird (FLEET-245 Grind-Race: context→gaming puffert pause_homepods,
+      3 ms später hebt subcontext→grind sie auf, aber der No-Op-Plan konnte den
+      stale pause bisher nicht canceln). Fenster NICHT neu anstoßen → Anti-
+      Starvation bleibt, latest-wins gilt jetzt auch fürs Zurücknehmen.
+    - No-Op-Plan ohne laufendes Fenster → nichts tun.
+    """
+    if plan.has_work:
+        return True, True
+    if window_active:
+        return True, False
+    return False, False
+
+
 # --------------------------------------------------------------------------- #
 # Master-Entscheidung
 # --------------------------------------------------------------------------- #

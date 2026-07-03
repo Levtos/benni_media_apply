@@ -521,6 +521,28 @@ def test_has_work_false_for_trivial_plan():
     assert L.ApplyPlan(quiet_override=True).has_work is False
 
 
+def test_debounce_decision_real_plan_buffers_and_restarts():
+    # Echter Plan → puffern + Fenster (neu) anstoßen, egal ob schon eins läuft.
+    p = L.ApplyPlan(homepods_action=C.ACTION_PAUSE)
+    assert L.debounce_decision(p, window_active=False) == (True, True)
+    assert L.debounce_decision(p, window_active=True) == (True, True)
+
+
+def test_debounce_decision_noop_cancels_stale_action_in_window():
+    # FLEET-245 Grind-Race: läuft ein Fenster mit gepufferter pause und kommt ein
+    # No-Op-Plan (grind hat die Pause aufgehoben), muss der gepufferte Plan auf
+    # den No-Op-Stand → überholte pause wird NICHT ausgeführt. Fenster aber NICHT
+    # neu anstoßen (Anti-Starvation).
+    noop = L.ApplyPlan()
+    assert noop.has_work is False
+    assert L.debounce_decision(noop, window_active=True) == (True, False)
+
+
+def test_debounce_decision_noop_without_window_is_inert():
+    # Kein Fenster + No-Op → nichts puffern, nichts anstoßen.
+    assert L.debounce_decision(L.ApplyPlan(), window_active=False) == (False, False)
+
+
 # --------------------------------------------- Phase 4b: Radio-Katalog-Port
 def test_resolve_radio_uri_known_station():
     assert L.resolve_radio_uri("1live") == C.RADIO_CATALOG["1live"]
