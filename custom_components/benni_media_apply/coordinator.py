@@ -469,12 +469,17 @@ class MediaApplyCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             self._pending_plan = plan
             self.hass.async_create_task(self._execute_serialized())
             return
-        # EXEC_DEBOUNCE — triviale Re-Evals dürfen ein laufendes Fenster nicht
-        # neu anstoßen (sonst hungert ein gepufferter echter Plan aus).
-        if not plan.has_work:
-            return
-        self._pending_plan = plan
-        self._start_debounce()
+        # EXEC_DEBOUNCE — R2/R3-Pending-Buchführung (pure entschieden, FLEET-245):
+        # triviale Re-Evals stoßen das Fenster nicht neu an (Anti-Starvation),
+        # aktualisieren aber den gepufferten Plan, damit keine überholte Aktion
+        # ausgeführt wird.
+        update_pending, restart = logic.debounce_decision(
+            plan, self._debounce_unsub is not None
+        )
+        if update_pending:
+            self._pending_plan = plan
+        if restart:
+            self._start_debounce()
 
     @callback
     def _start_debounce(self) -> None:
