@@ -224,6 +224,7 @@ def should_autostart_radio(inp: "Inputs") -> bool:
     (radio_ready muss explizit True sein → kein Autostart ohne validen Sender)."""
     return (
         media_block_reason(inp) is None
+        and not presence_holds(inp)
         and inp.radio_ready is True
         and inp.manual_playback is not True
         and inp.planned_station_playing is not True
@@ -231,15 +232,26 @@ def should_autostart_radio(inp: "Inputs") -> bool:
 
 
 def media_block_reason(inp: Inputs) -> Optional[str]:
-    """Highest-priority absence/presence block for automatic apply paths."""
+    """Höchstpriorer Abwesenheits-Block für automatische Apply-Pfade. NUR echte
+    Abwesenheit (away) pausiert/gatet hart. `unknown`/degraded ist BEWUSST kein
+    Block: media_state flappt beim HA-Neustart kurz `presence_state=unknown`, und
+    das darf laufende Musik NICHT pausieren (war die Wurzel des Restart-Stopps —
+    Apply setzte away_block:presence_unknown → pause_homepods). Mirror der
+    media_policy v0.13.1: unknown hält nur den Auto-Start zurück (presence_holds),
+    fasst aber laufende Musik nicht an."""
     if inp.away_gate is True:
         return "away_gate"
     presence = (inp.presence_state or "").strip().lower()
     if presence == "abwesend":
         return "presence_away"
-    if presence == "unknown" or inp.presence_degraded:
-        return "presence_unknown"
     return None
+
+
+def presence_holds(inp: "Inputs") -> bool:
+    """unknown/degraded Presence: kein Radio-Auto-Start (wir wissen nicht, ob
+    zuhause), ABER kein Pause/Away-Block — laufende Musik bleibt unberührt."""
+    presence = (inp.presence_state or "").strip().lower()
+    return presence == "unknown" or inp.presence_degraded is True
 
 
 def radio_defaults() -> list[dict[str, str]]:
@@ -728,6 +740,11 @@ def decide_wake(inp: "Inputs") -> WakePlan:
         return p
     if media_block_reason(inp):
         p.reasons.append("r23:suppressed_away_gate")
+        return p
+    if presence_holds(inp):
+        # unknown/degraded (Reconnect/Restart-Transient): kein Morgen-Radio-Start,
+        # solange wir nicht wissen, ob zuhause. Laufende Musik bleibt trotzdem.
+        p.reasons.append("r23:suppressed_presence_unknown")
         return p
     if inp.bio_sleep is True:
         p.reasons.append("r23:suppressed_sleep")

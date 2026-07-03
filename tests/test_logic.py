@@ -800,4 +800,14 @@ def test_presence_degraded_blocks_wake_sequence():
         presence_degraded=True,
     ))
     assert p.fire is False
-    assert "r23:suppressed_away_gate" in p.reasons
+    assert "r23:suppressed_presence_unknown" in p.reasons
+
+
+def test_presence_unknown_is_not_away_block():
+    # DER Restart-Stopp-Fix: presence_state=unknown (media_state-Startup-Flap) darf
+    # KEINEN away_block auslösen — sonst pausierte Apply die laufende Musik.
+    assert L.media_block_reason(L.Inputs(presence_state="unknown")) is None
+    assert L.media_block_reason(L.Inputs(presence_degraded=True)) is None
+    # Echte Abwesenheit blockt weiterhin.
+    assert L.media_block_reason(L.Inputs(presence_state="abwesend")) == "presence_away"
+    assert L.media_block_reason(L.Inputs(away_gate=True)) == "away_gate"
