@@ -833,3 +833,96 @@ def test_presence_unknown_is_not_away_block():
     # Echte Abwesenheit blockt weiterhin.
     assert L.media_block_reason(L.Inputs(presence_state="abwesend")) == "presence_away"
     assert L.media_block_reason(L.Inputs(away_gate=True)) == "away_gate"
+
+
+# --------------------------------- control#3: Private-Exit-Delay + Wake-Guard
+def _px(**kw):
+    """Inputs für decide_private_exit (Defaults: Private aktiv, Denon an, TV aus)."""
+    base = dict(private_active=True, denon_power_on=True,
+                tv_player_state="off", denon_consumer_active=False)
+    base.update(kw)
+    return _inp(**base)
+
+
+def test_private_exit_arms_denon_off_delay_tv_off():
+    # Private endet, Denon an, TV aus, kein Konsument → Delay armen + HP sperren.
+    st = L.PrivateExitState(was_private=True, armed=False)
+    p, ns = L.decide_private_exit(_px(private_active=False), st)
+    assert p.timer == L.TIMER_ARM
+    assert ns.armed is True
+    assert p.suppress_homepods is True
+
+
+def test_private_exit_no_delay_when_denon_already_off():
+    st = L.PrivateExitState(was_private=True, armed=False)
+    p, ns = L.decide_private_exit(_px(private_active=False, denon_power_on=False), st)
+    assert p.timer == L.TIMER_NONE
+    assert ns.armed is False
+    assert p.suppress_homepods is False
+
+
+def test_private_exit_tv_takeover_keeps_denon_no_delay():
+    # TV übernimmt → Denon bleibt an, kein Delay.
+    st = L.PrivateExitState(was_private=True, armed=False)
+    p, ns = L.decide_private_exit(
+        _px(private_active=False, tv_player_state="playing"), st)
+    assert p.timer == L.TIMER_NONE
+    assert ns.armed is False
+
+
+def test_private_exit_delay_abort_on_tv():
+    # Delay läuft, dann wird der TV aktiv → abbrechen.
+    st = L.PrivateExitState(was_private=False, armed=True)
+    p, ns = L.decide_private_exit(
+        _px(private_active=False, tv_player_state="playing"), st)
+    assert p.timer == L.TIMER_CANCEL
+    assert ns.armed is False
+
+
+def test_private_exit_delay_abort_on_private_reentry():
+    st = L.PrivateExitState(was_private=False, armed=True)
+    p, ns = L.decide_private_exit(_px(private_active=True), st)
+    assert p.timer == L.TIMER_CANCEL
+    assert ns.armed is False
+
+
+def test_private_exit_delay_abort_on_consumer():
+    st = L.PrivateExitState(was_private=False, armed=True)
+    p, ns = L.decide_private_exit(
+        _px(private_active=False, denon_consumer_active=True), st)
+    assert p.timer == L.TIMER_CANCEL
+
+
+def test_private_exit_suppresses_homepods_start():
+    # Solange der Delay läuft (armed) und Denon an ist → HP-Start gesperrt.
+    st = L.PrivateExitState(was_private=False, armed=True)
+    p, _ = L.decide_private_exit(_px(private_active=False), st)
+    assert p.suppress_homepods is True
+
+
+def test_apply_suppresses_homepods_start_during_private_exit():
+    # decide_apply darf kein start_radio setzen, wenn suppress_homepods_start.
+    plan = _plan(_inp(action=C.ACTION_START_RADIO, homepods_state="idle",
+                      suppress_homepods_start=True))
+    assert plan.homepods_action == C.ACTION_NONE
+    assert "suppress:private_exit_denon" in plan.reasons
+
+
+def test_apply_allows_homepods_start_without_suppression():
+    plan = _plan(_inp(action=C.ACTION_START_RADIO, homepods_state="idle",
+                      radio_ready=True))
+    assert plan.homepods_action == C.ACTION_START_RADIO
+
+
+def test_wake_suppressed_during_private():
+    # R23-Fix: Private darf nie die Wake-Sequenz auslösen.
+    p = L.decide_wake(_inp(wake_trigger_fired=True, private_active=True,
+                           homepods_state="idle"))
+    assert p.fire is False
+    assert "r23:suppressed_private" in p.reasons
+
+
+def test_wake_fires_without_private():
+    p = L.decide_wake(_inp(wake_trigger_fired=True, private_active=False,
+                           homepods_state="idle", presence_state="zuhause"))
+    assert p.fire is True

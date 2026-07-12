@@ -40,6 +40,10 @@ from .const import (
     CONF_DEBOUNCE_SECONDS,
     CONF_DENON_NACHLAUF_PC,
     CONF_DENON_NACHLAUF_TV,
+    CONF_PRIVATE_EXIT_DELAY,
+    DEFAULT_PRIVATE_EXIT_DELAY,
+    AUDIO_OWNER_PRIVATE,
+    CONF_AUDIO_OWNER,
     CONF_DENON_PLAYER,
     CONF_DENON_POWER,
     CONF_DUCKED_LEVEL,
@@ -142,6 +146,7 @@ class MediaApplyCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self._exec_lock = asyncio.Lock()
         self._apply_state = logic.ApplyState()
         self._nachlauf_state = logic.NachlaufState()
+        self._private_exit_state = logic.PrivateExitState()   # control#3
         self._tv_wol_state = logic.TvWolState()
         self._sleep_tv_state = logic.SleepTvState()
         self._sleep_tv_task: Optional[asyncio.Task] = None
@@ -374,6 +379,8 @@ class MediaApplyCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             # Phase 4c (R12 TV-WoL).
             media_device=self._state(CONF_MEDIA_DEVICE),
             tv_player_state=self._state(CONF_TV_PLAYER),
+            # control#3: Private Time aus dem media_policy audio_owner-Sensor.
+            private_active=self._state(CONF_AUDIO_OWNER) == AUDIO_OWNER_PRIVATE,
         )
 
     def _compute(self) -> dict[str, Any]:
@@ -382,6 +389,13 @@ class MediaApplyCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         if media_blocked:
             self._cancel_radio_resume()
             self._cancel_wake()
+        # control#3: Private-Exit-Denon-Off-Delay VOR decide_apply — der
+        # suppress-Flag sperrt den HomePod-Start, solange der Delay läuft.
+        pxplan, self._private_exit_state = logic.decide_private_exit(
+            inputs, self._private_exit_state
+        )
+        if pxplan.suppress_homepods:
+            inputs = replace(inputs, suppress_homepods_start=True)
         plan, self._apply_state = logic.decide_apply(
             inputs, self._apply_state, self.settings()
         )
@@ -403,9 +417,12 @@ class MediaApplyCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self._last_debug = {
             **plan.as_dict(), "nachlauf": nplan.as_dict(),
             "tv_wol": twol.as_dict(), "sleep_tv": splan.as_dict(),
-            "wake": wplan.as_dict(),
+            "wake": wplan.as_dict(), "private_exit": pxplan.as_dict(),
         }
         self._maybe_log(plan)
+        # control#3: Private-Exit-Denon-Off-Delay (eigener Timer, abbrechbar).
+        # Flanken IMMER verarbeiten (Buchwerk auch im Shadow); realer Off gegatet.
+        self._dispatch_private_exit(pxplan.timer)
         # R2/R3: Ausführung läuft über Debounce-Fenster + Serialisierung, Quiet
         # bricht sofort durch. Preview/Status (oben) aktualisieren sich pro Event.
         self._schedule_execute(plan)
@@ -1014,6 +1031,43 @@ class MediaApplyCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self._nachlauf_tasks[key] = self.hass.async_create_task(
             self._run_nachlauf(key, duration)
         )
+
+    # ----- control#3: Private-Exit-Denon-Off-Delay (separater Timer) -----
+    @callback
+    def _dispatch_private_exit(self, intent: str) -> None:
+        if intent == logic.TIMER_ARM:
+            self._cancel_nachlauf("private_exit")
+            self._nachlauf_tasks["private_exit"] = self.hass.async_create_task(
+                self._run_private_exit(
+                    self._duration(CONF_PRIVATE_EXIT_DELAY, DEFAULT_PRIVATE_EXIT_DELAY)
+                )
+            )
+        elif intent == logic.TIMER_CANCEL:
+            self._cancel_nachlauf("private_exit")
+
+    async def _run_private_exit(self, duration: float) -> None:
+        """Wartet den Private-Exit-Delay ab, dann (gegatet) Denon aus. Abbrechbar
+        via _cancel_nachlauf('private_exit') (TV/Private/Konsument-Flanke)."""
+        try:
+            await asyncio.sleep(max(0.0, duration))
+        except asyncio.CancelledError:
+            raise
+        self._nachlauf_tasks.pop("private_exit", None)
+        self._private_exit_state.armed = False   # self-heal vor dem nächsten Tick
+        if self.apply_enabled:
+            if self._denon_consumer_active() is True:
+                _LOGGER.info(
+                    "media_apply: Private-Exit-Delay abgelaufen, aber Denon-"
+                    "Konsument aktiv → kein Off"
+                )
+            else:
+                await self._denon_power_off("private_exit")
+        else:
+            _LOGGER.debug(
+                "media_apply: Private-Exit-Delay abgelaufen (Shadow → kein Denon-Off)"
+            )
+        if self.data is not None:
+            self.async_set_updated_data(dict(self.data))
 
     @callback
     def _cancel_nachlauf(self, key: str) -> None:

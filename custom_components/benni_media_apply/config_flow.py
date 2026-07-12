@@ -22,6 +22,7 @@ from .const import (
     CONF_DEBOUNCE_SECONDS,
     CONF_DENON_NACHLAUF_PC,
     CONF_DENON_NACHLAUF_TV,
+    CONF_PRIVATE_EXIT_DELAY,
     CONF_DENON_PLAYER,
     CONF_DUCKED_LEVEL,
     CONF_HOMEPODS_PLAYER,
@@ -47,6 +48,7 @@ from .const import (
     DEFAULT_DEBOUNCE_SECONDS,
     DEFAULT_DENON_NACHLAUF_PC,
     DEFAULT_DENON_NACHLAUF_TV,
+    DEFAULT_PRIVATE_EXIT_DELAY,
     DEFAULT_DUCKED_LEVEL,
     DEFAULT_PROFILE,
     DEFAULT_RADIO_AUTOSTART,
@@ -113,6 +115,8 @@ _RAMP_FIELDS: dict[str, tuple[Any, Any]] = {
     # Phase 3 — Denon-Nachlauf (R13/R14), Sekunden.
     CONF_DENON_NACHLAUF_PC: (DEFAULT_DENON_NACHLAUF_PC, vol.All(vol.Coerce(float), vol.Range(min=0.0, max=600.0))),
     CONF_DENON_NACHLAUF_TV: (DEFAULT_DENON_NACHLAUF_TV, vol.All(vol.Coerce(float), vol.Range(min=0.0, max=600.0))),
+    # control#3 — Private-Exit-Denon-Off-Delay (separat vom 90 s-Nachlauf).
+    CONF_PRIVATE_EXIT_DELAY: (DEFAULT_PRIVATE_EXIT_DELAY, vol.All(vol.Coerce(float), vol.Range(min=0.0, max=120.0))),
     # Phase 4b — Radio: Pause zwischen play_media und media_play.
     CONF_RADIO_PLAY_DELAY: (DEFAULT_RADIO_PLAY_DELAY, vol.All(vol.Coerce(float), vol.Range(min=0.0, max=15.0))),
     # FLEET-79 — Radio-Autostart: Resume-Delay nach manueller Wiedergabe.

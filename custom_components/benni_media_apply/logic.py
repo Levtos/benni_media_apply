@@ -95,6 +95,12 @@ class Inputs:
     sleep_tv_extend_pressed: bool = False
     # R23 (Wake-Sequenz). Flanke vom Coordinator (ein Wake-Trigger ging an).
     wake_trigger_fired: bool = False
+    # control#3: Private Time aktiv (audio_owner == private_stack). Steuert den
+    # Private-Exit-Denon-Off-Delay + die Wake-Sperre. None = ungebunden/unbekannt.
+    private_active: Optional[bool] = None
+    # control#3: HomePod-Start sperren, solange der Private-Exit-Delay laeuft und
+    # der Denon noch an ist (kein kurzer Parallelbetrieb). Coordinator setzt es.
+    suppress_homepods_start: bool = False
 
 
 @dataclass(frozen=True)
@@ -391,6 +397,8 @@ def decide_apply(
         and inp.homepods_resume_allowed
         and not hp_playing
         and not inp.stop_latch
+        # control#3: waehrend des Private-Exit-Denon-Off-Delays keinen HP-Start.
+        and not inp.suppress_homepods_start
     ):
         p.homepods_action = ACTION_RESUME
         reasons.append("action:resume")
@@ -398,6 +406,7 @@ def decide_apply(
         action == ACTION_START_RADIO
         and not hp_playing
         and not inp.stop_latch
+        and not inp.suppress_homepods_start
         # Radio-Gates wie im YAML-Script (None = ungebunden ⇒ non-regressiv erlauben).
         and inp.radio_ready is not False
         and inp.manual_playback is not True
@@ -405,6 +414,13 @@ def decide_apply(
         p.homepods_action = ACTION_START_RADIO
         p.radio_uri = resolve_radio_uri(inp.radio_station)
         reasons.append("action:start_radio")
+    elif (
+        action in (ACTION_RESUME, ACTION_START_RADIO)
+        and inp.suppress_homepods_start
+        and not hp_playing
+    ):
+        p.homepods_action = ACTION_NONE
+        reasons.append("suppress:private_exit_denon")
     else:
         p.homepods_action = ACTION_NONE
 
@@ -621,6 +637,91 @@ def decide_denon_nachlauf(
 
 
 # --------------------------------------------------------------------------- #
+# control#3 — Private-Time-Exit-Routing (Denon-Off-Delay + HomePod-Sperre)
+# --------------------------------------------------------------------------- #
+@dataclass
+class PrivateExitState:
+    """Buchwerk des Private-Exit-Denon-Off-Delays zwischen Ticks (RAM)."""
+
+    was_private: bool = False
+    armed: bool = False
+
+
+@dataclass
+class PrivateExitPlan:
+    """Flanken-Intent für den Delay + HomePod-Sperre. Timer gehört dem Coordinator."""
+
+    timer: str = TIMER_NONE          # arm/cancel/none für den Denon-Off-Delay
+    suppress_homepods: bool = False  # HomePod-Start sperren, bis Denon aus
+    reasons: list = field(default_factory=list)
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "timer": self.timer,
+            "suppress_homepods": self.suppress_homepods,
+            "reasons": list(self.reasons),
+        }
+
+
+def decide_private_exit(
+    inp: "Inputs", state: Optional[PrivateExitState] = None
+) -> tuple[PrivateExitPlan, PrivateExitState]:
+    """control#3: Private-Time-Exit-Routing.
+
+    Der Private-Time-STATE endet sofort in media_state/policy (audio_owner
+    verlässt `private_stack`) — das verzögert dieser Delay NICHT. Hier hängt nur
+    der kurze, ABBRECHBARE Denon-Off-Delay dran: endet Private mit noch
+    laufendem Denon und ausgeschaltetem TV (kein anderer Konsument), wird der
+    Denon nach dem Delay ausgeschaltet; solange der Delay läuft und der Denon
+    noch an ist, wird der HomePod-Start gesperrt (kein kurzer Parallelbetrieb).
+    Abbruch, wenn TV aktiv wird, Private neu beginnt oder ein anderer Konsument
+    den Denon braucht. Separat vom generischen 90 s-Nachlauf (R13/R14)."""
+    if state is None:
+        state = PrivateExitState()
+    p = PrivateExitPlan()
+    ns = PrivateExitState(was_private=state.was_private, armed=state.armed)
+    reasons: list[str] = []
+
+    private = inp.private_active is True
+    tv_on = _tv_is_off(inp) is False
+    denon_on = inp.denon_power_on is True
+    consumer = inp.denon_consumer_active is not False  # None ⇒ konservativ „aktiv"
+    exit_edge = state.was_private and not private
+
+    if private:
+        # Während Private kein Exit-Delay; ein laufender Delay (Re-Entry) → cancel.
+        if ns.armed:
+            p.timer = TIMER_CANCEL
+            ns.armed = False
+            reasons.append("cancel:private_reentry")
+    elif exit_edge:
+        if tv_on or consumer:
+            # TV/anderer Konsument übernimmt den Denon → kein Delay, kein Off.
+            if ns.armed:
+                p.timer = TIMER_CANCEL
+                ns.armed = False
+            reasons.append("no_delay:tv_or_consumer")
+        elif denon_on:
+            p.timer = TIMER_ARM
+            ns.armed = True
+            reasons.append("arm:denon_off_delay")
+        else:
+            reasons.append("no_delay:denon_already_off")
+    else:
+        # Kein Private, keine Flanke — laufenden Delay pflegen/abbrechen.
+        if ns.armed and (tv_on or consumer or not denon_on):
+            p.timer = TIMER_CANCEL
+            ns.armed = False
+            reasons.append("cancel:condition_gone")
+
+    # HomePod-Start sperren, solange der Delay läuft UND der Denon noch an ist.
+    p.suppress_homepods = ns.armed and denon_on
+    ns.was_private = private
+    p.reasons = reasons
+    return p, ns
+
+
+# --------------------------------------------------------------------------- #
 # Phase 4c — TV-WoL (R12): Bildschirm-Szenario → TV einschalten (ohne Debounce)
 # --------------------------------------------------------------------------- #
 @dataclass
@@ -768,6 +869,13 @@ def decide_wake(inp: "Inputs") -> WakePlan:
         return p
     if inp.bio_sleep is True:
         p.reasons.append("r23:suppressed_sleep")
+        return p
+    # control#3: Private Time darf NIE eine HomePod-Wake-Sequenz ausloesen
+    # (fehlerhafte R23-Altanforderung entfernt). Waehrend Private bleiben die
+    # HomePods aus — hier hart geguardet, falls jemand Private als Wake-Trigger
+    # verdrahtet.
+    if inp.private_active is True:
+        p.reasons.append("r23:suppressed_private")
         return p
     p.fire = True
     p.reasons.append("r23:wake")

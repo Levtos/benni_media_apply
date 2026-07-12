@@ -287,6 +287,12 @@ CONF_DENON_NACHLAUF_TV: Final[str] = "denon_nachlauf_tv_seconds"
 DEFAULT_DENON_NACHLAUF_PC: Final[float] = 90.0
 DEFAULT_DENON_NACHLAUF_TV: Final[float] = 90.0
 
+# control#3 — Private-Time-Exit-Denon-Off-Delay (separat vom 90 s-Nachlauf).
+# audio_owner-Wert, der Private Time markiert (Kopie des media_policy-Contracts).
+AUDIO_OWNER_PRIVATE: Final[str] = "private_stack"
+CONF_PRIVATE_EXIT_DELAY: Final[str] = "private_exit_delay_seconds"
+DEFAULT_PRIVATE_EXIT_DELAY: Final[float] = 15.0
+
 # Phase 4c — TV-WoL (R12). media_player.turn_on löst das webOS-„Leuchtfeuer" aus
 # (bleibt 24/7 aktiv, die LG-Integration braucht es für den On/Off-Status); ist
 # zusätzlich eine MAC gesetzt, sendet media_apply das Magic-Packet selbst (variabel
