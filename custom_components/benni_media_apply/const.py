@@ -25,6 +25,9 @@ DATA_COORDINATOR: Final[str] = "coordinator"
 # das Panel ist Wegwerf (folgt). Read frei, Schreiben Admin.
 WS_GET_STATUS: Final[str] = f"{DOMAIN}/get_status"
 WS_SET_APPLY_ENABLED: Final[str] = f"{DOMAIN}/set_apply_enabled"
+WS_SCHEDULE_REAPPLY: Final[str] = f"{DOMAIN}/schedule_reapply"
+WS_APPLY_REAPPLY_NOW: Final[str] = f"{DOMAIN}/apply_reapply_now"
+WS_CANCEL_REAPPLY: Final[str] = f"{DOMAIN}/cancel_reapply"
 
 # Panel (Wegwerf-Frontend auf dem WS-Contract).
 DATA_VIEW_PANEL: Final[str] = "_view_panel"

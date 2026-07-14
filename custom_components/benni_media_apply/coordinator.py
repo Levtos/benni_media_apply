@@ -143,6 +143,13 @@ class MediaApplyCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self._debounce_unsub = None
         self._debounce_deadline: Optional[float] = None   # loop.time(), für remaining_s
         self._pending_plan: Optional[logic.ApplyPlan] = None
+        # Cockpit-Regeländerungen: serverseitiger latest-wins Reapply. Der
+        # Browser darf geschlossen oder neu geladen werden, ohne den Timer zu
+        # verlieren oder einen zweiten anzulegen.
+        self._reapply_unsub = None
+        self._reapply_deadline: Optional[float] = None
+        self._reapply_delay_s = 30.0
+        self._reapply_reason: str | None = None
         self._exec_lock = asyncio.Lock()
         self._apply_state = logic.ApplyState()
         self._nachlauf_state = logic.NachlaufState()
@@ -163,6 +170,7 @@ class MediaApplyCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self._ramp_total = 0
         self._log: deque[dict[str, Any]] = deque(maxlen=20)
         self._last_log_sig: tuple | None = None
+        self._radio_shortcuts_cache: list[dict[str, Any]] | None = None
 
     # ----- profile / binding -----
     @property
@@ -244,6 +252,7 @@ class MediaApplyCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         """Unload-Hook: laufende Ramp-, Debounce- und Nachlauf-Tasks abbrechen."""
         self._cancel_ramp()
         self._cancel_debounce()
+        self._cancel_reapply_timer()
         self._cancel_sleep_tv()
         self._cancel_wake()
         self._cancel_radio_resume()
@@ -383,7 +392,7 @@ class MediaApplyCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             private_active=self._state(CONF_AUDIO_OWNER) == AUDIO_OWNER_PRIVATE,
         )
 
-    def _compute(self) -> dict[str, Any]:
+    def _compute(self, *, force_execute: bool = False) -> dict[str, Any]:
         inputs = self._build_inputs()
         media_blocked = logic.media_block_reason(inputs) is not None
         if media_blocked:
@@ -425,7 +434,7 @@ class MediaApplyCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self._dispatch_private_exit(pxplan.timer)
         # R2/R3: Ausführung läuft über Debounce-Fenster + Serialisierung, Quiet
         # bricht sofort durch. Preview/Status (oben) aktualisieren sich pro Event.
-        self._schedule_execute(plan)
+        self._schedule_execute(plan, force=force_execute)
         # Nachlauf-Flanken IMMER verarbeiten (Arm/Cancel-Buchwerk auch im Shadow,
         # für Observability); der reale Denon-Off ist in _run_nachlauf gegatet.
         if nplan.active:
@@ -471,16 +480,20 @@ class MediaApplyCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
     # ----- R2/R3: Debounce + serialisierte Ausführung -----
     @callback
-    def _schedule_execute(self, plan: "logic.ApplyPlan") -> None:
+    def _schedule_execute(self, plan: "logic.ApplyPlan", *, force: bool = False) -> None:
         """Leitet einen Plan in die Ausführung (R2/R3). Quiet bricht sofort durch,
         sonst sammelt ein Debounce-Fenster Trigger-Bursts zu EINER Aktion."""
         mode = logic.execution_mode(plan)
+        # Ein geplanter Regel-Reapply hält normale Zieländerungen zurück. Quiet
+        # bleibt als sicherheitsrelevanter Hard-Override sofort wirksam.
+        if self._reapply_unsub is not None and mode != EXEC_IMMEDIATE and not force:
+            return
         if mode == EXEC_SHADOW:
             # Apply (wieder) aus → kein Pending mehr ausführen.
             self._cancel_debounce()
             self._pending_plan = None
             return
-        if mode == EXEC_IMMEDIATE:
+        if mode == EXEC_IMMEDIATE or force:
             # Quiet: laufendes Fenster verwerfen, sofort (serialisiert) ducken.
             self._cancel_debounce()
             self._pending_plan = plan
@@ -523,6 +536,54 @@ class MediaApplyCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         if self._debounce_deadline is None:
             return None
         return round(max(0.0, self._debounce_deadline - self.hass.loop.time()), 2)
+
+    def _reapply_remaining(self) -> Optional[float]:
+        if self._reapply_deadline is None:
+            return None
+        return round(max(0.0, self._reapply_deadline - self.hass.loop.time()), 2)
+
+    @callback
+    def _cancel_reapply_timer(self) -> None:
+        if self._reapply_unsub is not None:
+            self._reapply_unsub()
+            self._reapply_unsub = None
+        self._reapply_deadline = None
+
+    @callback
+    def async_schedule_reapply(self, delay_s: float = 30.0, reason: str | None = None) -> dict[str, Any]:
+        """Plane einen serverseitigen, latest-wins Regel-Reapply."""
+        self._cancel_reapply_timer()
+        self._cancel_debounce()
+        self._pending_plan = None
+        self._reapply_delay_s = max(0.0, float(delay_s))
+        self._reapply_reason = reason or "rules_saved"
+        self._reapply_deadline = self.hass.loop.time() + self._reapply_delay_s
+        self._reapply_unsub = async_call_later(
+            self.hass, self._reapply_delay_s, self._fire_reapply
+        )
+        self.async_update_listeners()
+        return self.status()
+
+    @callback
+    def _fire_reapply(self, _now) -> None:
+        self._reapply_unsub = None
+        self._reapply_deadline = None
+        # Erst beim Feuern neu rechnen: Kontext und Policy-Ziele sind damit
+        # aktuell, kein beim Speichern eingefrorener Plan wird ausgeführt.
+        self.async_set_updated_data(self._compute(force_execute=True))
+
+    @callback
+    def async_apply_reapply_now(self) -> dict[str, Any]:
+        self._cancel_reapply_timer()
+        self.async_set_updated_data(self._compute(force_execute=True))
+        return self.status()
+
+    @callback
+    def async_cancel_reapply(self) -> dict[str, Any]:
+        self._cancel_reapply_timer()
+        self._reapply_reason = None
+        self.async_update_listeners()
+        return self.status()
 
     async def _execute_serialized(self) -> None:
         """Serialisiert die Geräte-Schaltung (R3: Queue statt Race). Es läuft
@@ -583,6 +644,12 @@ class MediaApplyCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 # Der eine konsolidierte, noch nicht ausgeführte Plan (latest-wins,
                 # KEINE Stale-FIFO) — Cockpit zeigt damit „was als Nächstes käme".
                 "plan": self._pending_plan.as_dict() if self._pending_plan else None,
+            },
+            "reapply": {
+                "pending": self._reapply_unsub is not None,
+                "delay_s": self._reapply_delay_s,
+                "remaining_s": self._reapply_remaining(),
+                "reason": self._reapply_reason if self._reapply_unsub is not None else None,
             },
             "plan": plan,
             "log": list(self._log),
@@ -1178,6 +1245,24 @@ class MediaApplyCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 "favorite": bool(item.get("favorite")),
             })
         return out
+
+    async def async_radio_shortcuts(self) -> list[dict[str, Any]]:
+        """Default-Sender mit Music-Assistant-Logo und Live-Markierung."""
+        if self._radio_shortcuts_cache is None:
+            enriched: list[dict[str, Any]] = []
+            for station in logic.radio_defaults():
+                matches = await self.async_search_radio(station["name"], 5)
+                match = next((item for item in matches if item["uri"] == station["uri"]), None)
+                if match is None:
+                    target = station["name"].casefold()
+                    match = next((item for item in matches if str(item["name"]).casefold() == target), None)
+                enriched.append({**station, "image": (match or {}).get("image"), "favorite": bool((match or {}).get("favorite"))})
+            self._radio_shortcuts_cache = enriched
+        inp = self._build_inputs()
+        return [
+            {**station, "playing": bool(inp.planned_station_playing and inp.radio_station == station.get("key"))}
+            for station in self._radio_shortcuts_cache
+        ]
 
     # ----- service surface -----
     async def async_set_apply_enabled(self, value: bool) -> None:
