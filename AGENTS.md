@@ -11,6 +11,13 @@
 - Plane and Forgejo are historical sources only and are not used for active work.
 - Full rules live in `ha-platform/control/AGENTS.md`, `ha-platform/control/CLAUDE.md`, and `ha-platform/control/docs/workflow/`.
 
+## Project-Memory Bootstrap
+
+- Before significant work, read the matching GitLab issue description and all notes, then `ha-platform/control/docs/workflow/README.md`, its linked workflow documents, and relevant `ha-platform/control` wiki pages.
+- GitLab is the workflow truth. GitHub is only the distribution/HACS mirror; do not develop there directly. Plane is frozen historical context, and Forgejo is out of service.
+- Stay inside the decided issue scope: no side quests and no overwriting foreign branches or dirty worktrees.
+- Use the smallest sufficient verification for the risk tier. Stable changes to behavior, contracts, operations, or rules belong in the wiki; use live evidence when runtime behavior must be proved. Completion notes must document wiki impact, verification/tests, release state where applicable, and required live evidence.
+
 ## Safety
 
 - Do not put secrets in issues, commits, logs, or reports.
