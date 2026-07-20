@@ -752,6 +752,24 @@ def test_autostart_radio_blocked_when_planned_already_playing():
         radio_ready=True, manual_playback=False, planned_station_playing=True)) is False
 
 
+def test_autostart_radio_blocked_during_bio_sleep_at_plan_and_recheck_gate():
+    # should_autostart_radio() ist das gemeinsame Gate beim Planen und beim
+    # verzögerten Recheck unmittelbar vor dem tatsächlichen Radio-Start.
+    assert L.should_autostart_radio(L.Inputs(
+        bio_sleep=True,
+        radio_ready=True,
+        manual_playback=False,
+        planned_station_playing=False,
+    )) is False
+    # `waking`/`awake` werden vom Coordinator als bio_sleep=False geliefert.
+    assert L.should_autostart_radio(L.Inputs(
+        bio_sleep=False,
+        radio_ready=True,
+        manual_playback=False,
+        planned_station_playing=False,
+    )) is True
+
+
 def test_radio_defaults_shape_and_sort():
     d = L.radio_defaults()
     assert len(d) == len(C.RADIO_CATALOG)
