@@ -227,10 +227,12 @@ def should_autostart_radio(inp: "Inputs") -> bool:
     Sender bereit ist (`radio_ready` True), KEINE manuelle Wiedergabe läuft und die
     geplante Station NICHT eh schon spielt. Der Trigger (Wake-Flanke / manual-off-
     Flanke) sowie das Latch-Lösen liegen im Coordinator. None (ungebunden) = blockt
-    (radio_ready muss explizit True sein → kein Autostart ohne validen Sender)."""
+    (radio_ready muss explizit True sein → kein Autostart ohne validen Sender).
+    Während `bio_sleep` bleiben automatische Starts und Resumes gesperrt (#45)."""
     return (
         media_block_reason(inp) is None
         and not presence_holds(inp)
+        and inp.bio_sleep is not True
         and inp.radio_ready is True
         and inp.manual_playback is not True
         and inp.planned_station_playing is not True
