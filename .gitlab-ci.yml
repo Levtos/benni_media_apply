@@ -1,0 +1,4 @@
+include:
+  - project: "ha-platform/control"
+    ref: main
+    file: "/ci/hacs-github-release.gitlab-ci.yml"
