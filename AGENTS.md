@@ -1,35 +1,32 @@
-# AGENTS.md - media-apply
+# Repository bootstrap: benni_media_apply
 
-## GitLab Workflow
+GitHub is the active source of truth for this repository's code, Issues, pull requests, Actions, releases, and HACS distribution. The central operating model and Project Memory are in https://github.com/Levtos/control.
 
-- GitLab project `ha-platform/control` is the central workflow truth.
-- Relevant work requires a GitLab issue in `ha-platform/control`.
-- Before work starts, read the issue description and all issue notes.
-- Document current state, decisions, scope changes, tests, commits, merge requests, blockers, and completion in the issue.
-- Code changes happen in the matching GitLab repository. `origin` must point to GitLab.
-- GitHub is only the public distribution and HACS mirror. Do not develop directly on GitHub and do not push manually to GitHub.
-- Plane and Forgejo are historical sources only and are not used for active work.
-- Full rules live in `ha-platform/control/AGENTS.md`, `ha-platform/control/CLAUDE.md`, and `ha-platform/control/docs/workflow/`.
+## Before work
 
-## Project-Memory Bootstrap
+- Read the complete GitHub Issue and all comments.
+- Add the Issue to the Platform Workflow Project and set known Status, Type, Priority, Owner, Scope, Evidence, and Module fields.
+- Read relevant docs in Levtos/control and this repository's functional specification.
+- Use a fresh clone or isolated worktree from the verified default branch. Never overwrite a dirty checkout.
 
-- Before significant work, read the matching GitLab issue description and all notes, then `ha-platform/control/docs/workflow/README.md`, its linked workflow documents, and relevant `ha-platform/control` wiki pages.
-- GitLab is the workflow truth. GitHub is only the distribution/HACS mirror; do not develop there directly. Plane is frozen historical context, and Forgejo is out of service.
-- Stay inside the decided issue scope: no side quests and no overwriting foreign branches or dirty worktrees.
-- Use the smallest sufficient verification for the risk tier. Stable changes to behavior, contracts, operations, or rules belong in the wiki; use live evidence when runtime behavior must be proved. Completion notes must document wiki impact, verification/tests, release state where applicable, and required live evidence.
+## Work and evidence
 
-## Safety
+- Benni decides product behavior. Do not invent behavior or expand scope.
+- Use one active implementation agent per Issue.
+- Work on a branch, run focused tests, open a PR, inspect checks, and merge server-side.
+- Record the commit, push actor, PR actor, merge actor, checks, merge SHA, release, and HACS evidence on the Issue.
+- New unrelated findings become separate Issues.
+- Do not print tokens, credentials, private configuration, or personal data.
 
-- Do not put secrets in issues, commits, logs, or reports.
-- Do not touch production Home Assistant systems without explicit approval.
-- No admin, delete, runner, or bulk actions without explicit approval.
+## Releases
 
-## UX-Frontend-Standard (verbindlich)
+- Stable vX.Y.Z releases are standard.
+- Alpha, beta, RC, and other pre-releases require Benni's explicit decision.
+- The manifest version must match the stable tag without v.
+- The release Action creates a normal, non-draft, non-prerelease GitHub Release.
+- The technical chain ends at a visible HACS update.
+- Keep Testing and Tests Pass separate from Benni's Live and Live Verified gate.
 
-Für jede UX-/Frontend-Arbeit gilt der verbindliche, fleet-weite UX-, Technologie- und
-Designstandard. Kanonische Quelle: ADR `ha-platform/control:docs/adr/0001-ux-frontend-standard.md`
-(Issue `control#58`). Kurzform: Svelte 5 · Vite · TypeScript · Bits UI · shadcn-svelte ·
-Tailwind · CSS Custom Properties · Lucide; Design "Graphite Dark – semantic accent system";
-zentrale UX = statisches Bundle + dünnes UX-Gateway (primär HA-Ingress); versionierte/typisierte
-Contracts. Details und Abweichungsprozess: `docs/ux-frontend-standard.md` und das ADR. Bestehende
-Regeln werden dadurch ergänzt, nie überschrieben oder entfernt.
+## Boundaries
+
+Repository-local tests and central release automation are separate layers. Do not add runners or unrelated CI gates. Do not force-push, delete/replace tags, or change Home Assistant, LXC 104, MCPHub, or LeanCTX from this repository. Use git, gh, and the helper in Levtos/control; avoid interactive credential dialogs.
