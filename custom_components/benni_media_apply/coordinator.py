@@ -417,6 +417,13 @@ class MediaApplyCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         if media_blocked:
             self._cancel_radio_resume()
             self._cancel_wake()
+        # benni_media#16: Hat ein Bildschirm-Stack (TV) das Audio übernommen, wird
+        # ein noch WARTENDER verzögerter Radio-Resume sofort abgebrochen — sonst
+        # feuert ein in einem kurzen (Flacker-)Musikfenster geplanter Start später
+        # unter laufendem TV (belegter Folgefehler 22:18). Der Re-Check in
+        # should_autostart_radio fängt es zusätzlich am Fire-Zeitpunkt ab.
+        elif logic.screen_blocks_music_start(inputs):
+            self._cancel_radio_resume()
         # control#3: Private-Exit-Denon-Off-Delay VOR decide_apply — der
         # suppress-Flag sperrt den HomePod-Start, solange der Delay läuft.
         pxplan, self._private_exit_state = logic.decide_private_exit(
@@ -937,6 +944,12 @@ class MediaApplyCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             await asyncio.sleep(max(0.0, delay))
         except asyncio.CancelledError:
             raise
+        # benni_media#16: unmittelbar vor dem echten Play-Kommando den stabilen
+        # Kontext erneut prüfen — hat der TV in der Wartezeit übernommen, keinen
+        # Musikstart auslösen (die Queue bleibt gefüllt, aber stumm/pausiert).
+        if logic.screen_blocks_music_start(self._build_inputs()):
+            _LOGGER.debug("media_apply: radio_play_after abgebrochen — TV aktiv")
+            return
         await self._svc("media_player", "media_play", {"entity_id": entity_id})
 
     # ----- Radio-Autostart (FLEET-79) -----

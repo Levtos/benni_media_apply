@@ -231,13 +231,36 @@ def resolve_radio_uri(station: Optional[str]) -> Optional[str]:
     return RADIO_CATALOG.get(station)
 
 
+def screen_blocks_music_start(inp: "Inputs") -> bool:
+    """benni_media#16 — Besitzt gerade ein Bildschirm-Stack (TV) das Audio, sodass
+    kein Musikstart erfolgen darf?
+
+    Belegter Live-Folgefehler (2026-08-01, TV-Start ~22:17): Der TV-Master
+    flackerte beim Hochfahren extern (active→off→active, Watt-Dip auf 43 W). Im
+    kurzen Falsch-Musik-Fenster endete die manuelle Wiedergabe (`manual_playback`
+    on→off, 22:17:54) und armte den verzögerten Radio-Resume (Trigger B,
+    `RADIO_RESUME_DELAY` 10 s). Als er 22:18:04 feuerte, war der TV längst stabil
+    aktiv (`audio_owner=tv_denon`, `homepods_resume_allowed=off`), aber weder
+    `should_autostart_radio` (TV-blind) noch `action==PAUSE` (Gruppe schon idle →
+    `action=none`) fingen das ab → GAY.FM startete unter laufendem TV und musste
+    erneut pausiert werden.
+
+    Regel: Ist der TV zum Ausführungszeitpunkt an, wird kein (verzögerter)
+    Musikstart ausgelöst. Geprüft wird der STABILE Ist-Zustand (WebOS primär,
+    Watt-Fallback über `_tv_is_off`), nicht ein veraltetes wartendes Startsignal —
+    damit robust gegen den kurzen TV-Master-Flacker. ``None`` (TV unbekannt) blockt
+    NICHT (non-regressiv)."""
+    return _tv_is_off(inp) is False
+
+
 def should_autostart_radio(inp: "Inputs") -> bool:
     """FLEET-79: Gate für den Radio-Autostart (Wake / Resume). Nur wenn ein gültiger
     Sender bereit ist (`radio_ready` True), KEINE manuelle Wiedergabe läuft und die
     geplante Station NICHT eh schon spielt. Der Trigger (Wake-Flanke / manual-off-
     Flanke) sowie das Latch-Lösen liegen im Coordinator. None (ungebunden) = blockt
     (radio_ready muss explizit True sein → kein Autostart ohne validen Sender).
-    Während `bio_sleep` bleiben automatische Starts und Resumes gesperrt (#45)."""
+    Während `bio_sleep` bleiben automatische Starts und Resumes gesperrt (#45).
+    benni_media#16: bei aktivem TV wird nie Musik gestartet (screen_blocks_music_start)."""
     return (
         media_block_reason(inp) is None
         and not presence_holds(inp)
@@ -245,6 +268,7 @@ def should_autostart_radio(inp: "Inputs") -> bool:
         and inp.radio_ready is True
         and inp.manual_playback is not True
         and inp.planned_station_playing is not True
+        and not screen_blocks_music_start(inp)
     )
 
 

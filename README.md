@@ -22,6 +22,12 @@ HomePods-Action (pause/play; `start_radio` → delegiert an ein Script),
 Volume mit Ramps, Subwoofer on/off. Restore (R20), Denon-Nachlauf (R13/R14),
 Sleep-TV-Off (R24/R25), Radio-Katalog-Port, TV-WoL, FIFO-Queue folgen.
 
+Radio-Autostart/-Resume startet nie Musik, solange ein Bildschirm-Stack (TV)
+das Audio besitzt (benni_media#16): `should_autostart_radio` prüft zusätzlich
+`_tv_is_off`, ein wartender verzögerter Resume wird bei TV-Übernahme abgebrochen,
+und unmittelbar vor dem echten Play-Kommando wird der stabile Kontext erneut
+geprüft — robust gegen kurzes TV-Master-Flackern beim Hochfahren.
+
 Siehe `FAHRPLAN.md`.
 
 ## Verifikation
