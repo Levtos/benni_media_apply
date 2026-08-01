@@ -5,6 +5,9 @@
 **nur über HA-Entity-State** und führt sie an den echten Geräten aus — idempotent
 (nur bei Ist≠Soll). HomePods geramped (16×1s, Tiny-Delta direkt); der Denon
 kann keine Rampe — harter Set, und seit benni_media#13 am R2-Fenster vorbei.
+Volume-Befehle gehen nur an eine spielende bzw. gerade gestartete HomePod-Gruppe,
+nie an eine pausierte/idle (benni_media#16 — `volume_set` weckt den AirPlay-Player
+und ist dort unhörbar; Pause ist der Stop-Mechanismus, nicht `volume 0`).
 
 Muster: light_policy → scene_presets. Policy denkt, Apply tut.
 
