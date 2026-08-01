@@ -26,6 +26,7 @@ from .const import (
     CONF_DENON_PLAYER,
     CONF_DUCKED_LEVEL,
     CONF_HOMEPODS_PLAYER,
+    CONF_HOMEPODS_PODS,
     CONF_PROFILE,
     CONF_RADIO_AUTOSTART,
     CONF_RADIO_PLAY_DELAY,
@@ -85,6 +86,11 @@ _PLAYER_KEYS = (CONF_HOMEPODS_PLAYER, CONF_DENON_PLAYER, CONF_TV_PLAYER)
 _SWITCH_KEYS = (CONF_SUBWOOFER_SWITCH,)
 _MULTI = selector.EntitySelector(selector.EntitySelectorConfig(multiple=True))
 _MULTI_KEYS = (CONF_WAKE_TRIGGERS,)
+# benni_media#16 — Pod-Liste: mehrere media_player (die einzelnen AirPlay-Pods).
+_MULTI_PLAYER = selector.EntitySelector(
+    selector.EntitySelectorConfig(domain="media_player", multiple=True)
+)
+_MULTI_PLAYER_KEYS = (CONF_HOMEPODS_PODS,)
 
 
 def _normalize_entity_value(value: Any) -> Any:
@@ -96,6 +102,8 @@ def _normalize_entity_value(value: Any) -> Any:
 
 
 def _selector_for(key: str) -> Any:
+    if key in _MULTI_PLAYER_KEYS:
+        return _MULTI_PLAYER
     if key in _MULTI_KEYS:
         return _MULTI
     if key in _PLAYER_KEYS:

@@ -346,6 +346,22 @@ def homepods_volume_addressable(action: str, hp_state: Optional[str]) -> bool:
     return hp_state in PLAYER_PLAYING_VALUES
 
 
+def volume_target_entities(pods: Any, group: Optional[str]) -> list[str]:
+    """benni_media#16 — Ziel-Entities für HomePods-Volume/Ramp.
+
+    Lastenheft „pro Gerät einzeln (kein Gruppen-Call)": ein `volume_set` auf die
+    AirPlay-Sync-GRUPPE weckt einen pausierten Verbund wieder auf (belegter Live-
+    Bug), auf die einzelnen Pods nicht. Ist die Pod-Liste gebunden, wird sie
+    genutzt; sonst Fallback auf die Gruppe (non-regressiv). Pause/Resume/Radio
+    adressieren weiterhin die Gruppe — nur Volume geht pro Pod.
+    """
+    if isinstance(pods, (list, tuple)):
+        ids = [e for e in pods if isinstance(e, str) and e]
+        if ids:
+            return ids
+    return [group] if isinstance(group, str) and group else []
+
+
 # --------------------------------------------------------------------------- #
 # Ausführungs-Modus (R2 Debounce / R3 Queue-statt-Race)
 # --------------------------------------------------------------------------- #
