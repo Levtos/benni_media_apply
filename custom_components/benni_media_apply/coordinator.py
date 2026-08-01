@@ -339,6 +339,14 @@ class MediaApplyCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             return None
         return md in DENON_CONSUMER_DEVICES
 
+    def _denon_consumer_holds(self) -> Optional[bool]:
+        """benni_media#14: Konsumenten-Gate inkl. Power-Gegenprobe (pure Regel in
+        `logic.denon_consumer_holds`). Wird auch beim Timer-Ablauf benutzt, damit
+        die Ablauf-Gegenprobe dieselbe Wahrheit nutzt wie die Arm-Entscheidung —
+        sonst armt der Timer, und ein stale media_device verhindert am Ende doch
+        den Off."""
+        return logic.denon_consumer_holds(self._build_inputs())
+
     def _denon_power_on(self) -> Optional[bool]:
         """Denon-Power: dediziertes Atomic bevorzugt (CONF_DENON_POWER, sobald
         nach #54 gebunden), sonst Ableitung aus dem bereits gebundenen
@@ -1191,7 +1199,7 @@ class MediaApplyCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self._nachlauf_tasks.pop("private_exit", None)
         self._private_exit_state.armed = False   # self-heal vor dem nächsten Tick
         if self.apply_enabled:
-            if self._denon_consumer_active() is True:
+            if self._denon_consumer_holds() is True:
                 _LOGGER.info(
                     "media_apply: Private-Exit-Delay abgelaufen, aber Denon-"
                     "Konsument aktiv → kein Off"
@@ -1228,7 +1236,7 @@ class MediaApplyCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         if self.apply_enabled:
             # FLEET-80: finaler Konsumenten-Check am Ablauf (event-getriebener
             # Cancel sollte schon gegriffen haben — doppelt safe gegen Races).
-            if self._denon_consumer_active() is True:
+            if self._denon_consumer_holds() is True:
                 _LOGGER.info(
                     "media_apply: Nachlauf %s abgelaufen, aber Denon-Konsument "
                     "aktiv (media_device) → kein Off", key

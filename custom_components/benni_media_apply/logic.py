@@ -23,6 +23,9 @@ from .const import (
     ACTION_PAUSE,
     ACTION_RESUME,
     ACTION_START_RADIO,
+    DENON_CONSUMER_POWER_CHECKED,
+    DEV_LABEL_PC,
+    DEV_LABEL_TV,
     DEFAULT_DEBOUNCE_MAX_WAIT,
     DEFAULT_DEBOUNCE_SECONDS,
     DEFAULT_DENON_IMMEDIATE,
@@ -641,7 +644,9 @@ def decide_denon_nachlauf(
     denon_on = inp.denon_power_on is True
     # Ein anderer Denon-Konsument hält den geteilten Denon. None (unbekannt) ⇒
     # konservativ wie „aktiv" → kein Off auf Basis fehlender Daten.
-    consumer_active = inp.denon_consumer_active is not False
+    # benni_media#14: über `denon_consumer_holds`, damit ein stale media_device-
+    # Label eines nachweislich AUSGESCHALTETEN Konsumenten den Denon nicht hält.
+    consumer_active = denon_consumer_holds(inp) is not False
 
     # ----- R13: PC-Aus (KANTEN-getriggert, FLEET-80) -----
     # Armen NUR auf der Fallflanke PC an→aus bei laufendem Denon UND ohne anderen
@@ -742,7 +747,8 @@ def decide_private_exit(
     private = inp.private_active is True
     tv_on = _tv_is_off(inp) is False
     denon_on = inp.denon_power_on is True
-    consumer = inp.denon_consumer_active is not False  # None ⇒ konservativ „aktiv"
+    # benni_media#14: stale media_device darf die Exit-Flanke nicht verschlucken.
+    consumer = denon_consumer_holds(inp) is not False  # None ⇒ konservativ „aktiv"
     exit_edge = state.was_private and not private
 
     if private:
@@ -796,6 +802,45 @@ class TvWolPlan:
 
     def as_dict(self) -> dict[str, Any]:
         return {"fire": self.fire, "reasons": list(self.reasons)}
+
+
+def denon_consumer_holds(inp: "Inputs") -> Optional[bool]:
+    """Hält gerade ein ANDERER Konsument den geteilten Denon? (benni_media#14)
+
+    Verschärfung des FLEET-80-Cross-Source-Gates gegen ein *stale* `media_device`.
+    `media_device` ist ein BESCHREIBENDES Label aus media_state und hinkt der
+    Power-Wahrheit um Millisekunden hinterher. Belegte Evidenz (Recorder,
+    2026-07-31, Levtos/benni_media#14):
+
+    - ``01:08:18.845`` ``sensor.benni_master_pc`` → ``off`` (``powered=false``,
+      17 W) — der PC ist eindeutig aus.
+    - ``01:08:25.097`` ``audio_owner`` verlässt ``private_stack`` → Private-Exit-
+      Flanke. ``media_device`` steht hier NOCH auf ``pc``.
+    - ``01:08:25.105`` ``media_device`` wechselt auf ``denon`` (8 ms zu spät).
+
+    Das Gate las in diesem einen Tick „PC ist Denon-Konsument" und verwarf die
+    Exit-Flanke (`no_delay:tv_or_consumer`). Die Flanke kommt nicht wieder → der
+    Denon blieb dauerhaft an (``sensor.benni_master_denon`` blieb ``active``).
+
+    Regel: Steht das Label auf einem Konsumenten, dessen EIGENE, unabhängige
+    Power-Quelle explizit ``aus`` meldet, hält dieser Konsument den Denon NICHT.
+    Damit entscheidet der fachliche Ist-Zustand des Konsumenten und nicht ein
+    nachlaufendes Label. ``None``/unbekannt bleibt konservativ „aktiv" — die
+    FLEET-80-Sicherheitslinie (kein Off auf Basis fehlender Daten) bleibt
+    unangetastet, und Konsumenten ohne eigene Power-Quelle (appletv/ps5/switch)
+    halten den Denon weiterhin.
+    """
+    active = inp.denon_consumer_active
+    if active is not True:
+        return active   # False (kein Konsument) / None (unbekannt) unverändert
+    device = (inp.media_device or "").strip().lower()
+    if device not in DENON_CONSUMER_POWER_CHECKED:
+        return True
+    if device == DEV_LABEL_PC and inp.pc_power_on is False:
+        return False
+    if device == DEV_LABEL_TV and _tv_is_off(inp) is True:
+        return False
+    return True
 
 
 def _tv_is_off(inp: "Inputs") -> Optional[bool]:

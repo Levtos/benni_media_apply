@@ -89,6 +89,15 @@ SCREEN_DEVICES: Final = ("tv", "appletv")
 # „homepods" (separate Audio-Senke) und „none" zählen bewusst NICHT als Konsument.
 DENON_CONSUMER_DEVICES: Final = ("tv", "appletv", "ps5", "switch", "pc")
 
+# benni_media#14 — Konsumenten, für die media_apply eine EIGENE, autoritative
+# Power-Quelle gebunden hat (PC-/TV-Master bzw. WebOS-State). Nur für diese darf
+# ein explizites „aus" das beschreibende `media_device`-Label überstimmen; alle
+# anderen (appletv/ps5/switch) bleiben konservativ, weil es dafür keine
+# unabhängige Power-Wahrheit gibt.
+DEV_LABEL_PC: Final = "pc"
+DEV_LABEL_TV: Final = "tv"
+DENON_CONSUMER_POWER_CHECKED: Final = (DEV_LABEL_PC, DEV_LABEL_TV)
+
 # Bio-State (core_state), bei dem R14 pausiert (Sleep dominant).
 BIO_SLEEP_VALUE: Final = "sleep"
 # R23 — Wake-Übergang: bio_state-Werte, die als „wach" gelten. Der Eintritt in
