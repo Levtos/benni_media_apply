@@ -235,6 +235,17 @@ CONF_DUCKED_LEVEL: Final[str] = "ducked_level"
 # R2 — Debounce: Szenario-Übergänge warten dieses Fenster, Trigger-Bursts werden
 # zu EINER Aktion konsolidiert. Quiet bricht durch (kein Debounce). 5s kalibrierbar.
 CONF_DEBOUNCE_SECONDS: Final[str] = "debounce_seconds"
+# benni_media#13 — Anti-Starvation-Deckel: jeder Plan mit Arbeit stieß das
+# Debounce-Fenster bisher NEU an. Ein Übergangs-Burst konnte die Ausführung
+# dadurch unbegrenzt vor sich herschieben. Ab diesem Alter des laufenden Fensters
+# wird `latest-wins` weiter gepuffert, das Fenster aber NICHT mehr verlängert.
+CONF_DEBOUNCE_MAX_WAIT: Final[str] = "debounce_max_wait_seconds"
+# benni_media#13 — Der Denon kann technisch KEINE sinnvolle Volume-Rampe fahren
+# (harter Set, sofort hörbar am AVR-OSD). Sein Volume-Set wartet deshalb NICHT
+# auf das R2-Fenster, sondern geht sofort raus, sobald Zielkontext und Zielwert
+# feststehen. Die HomePods-Rampe bleibt davon unberührt (bewusst sanft, 16×1s).
+# Ausschaltbar, falls sich am AVR doch ein Flacker-Effekt zeigt.
+CONF_DENON_IMMEDIATE: Final[str] = "denon_immediate_volume"
 # Service-Delegation für start_radio — Fallback, wenn kein URI auflösbar
 # (Sender ungebunden/unbekannt). Phase 4b portiert den Katalog inline.
 CONF_RADIO_START_SCRIPT: Final[str] = "radio_start_script"
@@ -246,6 +257,8 @@ DEFAULT_RAMP_STEP_DELAY: Final[float] = 1.0
 DEFAULT_TINY_DELTA: Final[float] = 0.02
 DEFAULT_DUCKED_LEVEL: Final[float] = 0.10
 DEFAULT_DEBOUNCE_SECONDS: Final[float] = 5.0
+DEFAULT_DEBOUNCE_MAX_WAIT: Final[float] = 8.0
+DEFAULT_DENON_IMMEDIATE: Final[bool] = True
 DEFAULT_RADIO_START_SCRIPT: Final[str] = "script.media_radio_start"
 DEFAULT_RADIO_PLAY_DELAY: Final[float] = 2.0
 
@@ -337,6 +350,8 @@ RAMP_SETTING_DEFAULTS: Final[dict[str, Any]] = {
     CONF_TINY_DELTA: DEFAULT_TINY_DELTA,
     CONF_DUCKED_LEVEL: DEFAULT_DUCKED_LEVEL,
     CONF_DEBOUNCE_SECONDS: DEFAULT_DEBOUNCE_SECONDS,
+    CONF_DEBOUNCE_MAX_WAIT: DEFAULT_DEBOUNCE_MAX_WAIT,
+    CONF_DENON_IMMEDIATE: DEFAULT_DENON_IMMEDIATE,
 }
 
 # --------------------------------------------------------------------------- #
