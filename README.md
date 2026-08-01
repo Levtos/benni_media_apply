@@ -3,7 +3,8 @@
 **Ausführungsschicht / Executor** der Benni-Media-Kette. Konsumiert
 `benni_media_state` (Szenario) + `benni_media_policy` (Targets/Action/Gates)
 **nur über HA-Entity-State** und führt sie an den echten Geräten aus — idempotent
-(nur bei Ist≠Soll) und geramped (HomePods 16×1s, Tiny-Delta direkt; Denon hart).
+(nur bei Ist≠Soll). HomePods geramped (16×1s, Tiny-Delta direkt); der Denon
+kann keine Rampe — harter Set, und seit benni_media#13 am R2-Fenster vorbei.
 
 Muster: light_policy → scene_presets. Policy denkt, Apply tut.
 

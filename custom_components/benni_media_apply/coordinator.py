@@ -37,7 +37,9 @@ from .const import (
     CONF_APPLY_ENABLED,
     CONF_AWAY_GATE,
     CONF_BIO_STATE,
+    CONF_DEBOUNCE_MAX_WAIT,
     CONF_DEBOUNCE_SECONDS,
+    CONF_DENON_IMMEDIATE,
     CONF_DENON_NACHLAUF_PC,
     CONF_DENON_NACHLAUF_TV,
     CONF_PRIVATE_EXIT_DELAY,
@@ -85,7 +87,9 @@ from .const import (
     CONF_VOL_TARGET_HOMEPODS,
     CONF_VOLUME_APPLY_ALLOWED,
     DEFAULT_APPLY_ENABLED,
+    DEFAULT_DEBOUNCE_MAX_WAIT,
     DEFAULT_DEBOUNCE_SECONDS,
+    DEFAULT_DENON_IMMEDIATE,
     DEFAULT_DENON_NACHLAUF_PC,
     DEFAULT_DENON_NACHLAUF_TV,
     DEFAULT_DUCKED_LEVEL,
@@ -142,6 +146,9 @@ class MediaApplyCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         # R2/R3 — Debounce-Fenster + serialisierte Ausführung (latest-wins).
         self._debounce_unsub = None
         self._debounce_deadline: Optional[float] = None   # loop.time(), für remaining_s
+        # benni_media#13: Startzeit des laufenden Fensters (loop.time()) für den
+        # Anti-Starvation-Deckel — bleibt über ein Re-Arm hinweg erhalten.
+        self._debounce_started_at: Optional[float] = None
         self._pending_plan: Optional[logic.ApplyPlan] = None
         # Cockpit-Regeländerungen: serverseitiger latest-wins Reapply. Der
         # Browser darf geschlossen oder neu geladen werden, ohne den Timer zu
@@ -229,6 +236,10 @@ class MediaApplyCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             tiny_delta=_f(CONF_TINY_DELTA, DEFAULT_TINY_DELTA),
             ducked_level=_f(CONF_DUCKED_LEVEL, DEFAULT_DUCKED_LEVEL),
             debounce_seconds=_f(CONF_DEBOUNCE_SECONDS, DEFAULT_DEBOUNCE_SECONDS),
+            debounce_max_wait_s=_f(CONF_DEBOUNCE_MAX_WAIT, DEFAULT_DEBOUNCE_MAX_WAIT),
+            denon_immediate=bool(
+                self._opts.get(CONF_DENON_IMMEDIATE, DEFAULT_DENON_IMMEDIATE)
+            ),
             wake_start_volume=_f(CONF_WAKE_START_VOLUME, DEFAULT_WAKE_START_VOLUME),
             wake_debounce_seconds=_f(CONF_WAKE_DEBOUNCE, DEFAULT_WAKE_DEBOUNCE),
         )
@@ -428,6 +439,14 @@ class MediaApplyCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             "tv_wol": twol.as_dict(), "sleep_tv": splan.as_dict(),
             "wake": wplan.as_dict(), "private_exit": pxplan.as_dict(),
         }
+        # benni_media#13: effektive Ziele festhalten, BEVOR `_schedule_execute`
+        # den Denon-Set zur Sofort-Ausführung aus dem Plan entnimmt.
+        effective_hp = (
+            plan.homepods_levels[-1] if plan.homepods_levels else inputs.homepods_target
+        )
+        effective_dn = (
+            plan.denon_set if plan.denon_set is not None else inputs.denon_target
+        )
         self._maybe_log(plan)
         # control#3: Private-Exit-Denon-Off-Delay (eigener Timer, abbrechbar).
         # Flanken IMMER verarbeiten (Buchwerk auch im Shadow); realer Off gegatet.
@@ -463,10 +482,16 @@ class MediaApplyCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         # FLEET-44/98: der manuelle private_time-Latch + seine Auto-Löschung
         # leben jetzt nativ in media_state (switch-Entität) — apply verwaltet
         # ihn nicht mehr.
+        # benni_media#13 — Target-Sensoren zeigen das EFFEKTIVE Ziel, nicht das
+        # Plan-Delta. Bisher stand hier nur der Plan: ist Ist == Soll (idempotenter
+        # No-Op), war die Liste leer bzw. `denon_set` None → Sensor `unknown`,
+        # obwohl die Policy ein gültiges Ziel liefert. Genau das zeigte die
+        # Evidenz („Apply target becomes unknown") — ein Anzeige-Artefakt, keine
+        # echte Invalidierung. `unknown` bleibt nur, wenn es wirklich KEIN Ziel gibt.
         return {
             "last_action": plan.homepods_action,
-            "homepods_target": plan.homepods_levels[-1] if plan.homepods_levels else None,
-            "denon_target": plan.denon_set,
+            "homepods_target": effective_hp,
+            "denon_target": effective_dn,
             "ramp_active": self._ramp_active,
             "apply_enabled": self.apply_enabled,
             "execute": plan.execute,
@@ -499,23 +524,44 @@ class MediaApplyCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             self._pending_plan = plan
             self.hass.async_create_task(self._execute_serialized())
             return
+        # benni_media#13 — Der Denon fährt keine Rampe: sein harter Volume-Set geht
+        # SOFORT raus, sobald Zielkontext und Zielwert feststehen, und wartet nicht
+        # das R2-Fenster ab. Die HomePods-Rampe bleibt bewusst unangetastet und
+        # läuft weiter über das Debounce-Fenster.
+        denon_now = logic.take_immediate_denon(plan, self.settings().denon_immediate)
+        if denon_now is not None:
+            self.hass.async_create_task(self._execute_denon_volume(denon_now))
         # EXEC_DEBOUNCE — R2/R3-Pending-Buchführung (pure entschieden, FLEET-245):
         # triviale Re-Evals stoßen das Fenster nicht neu an (Anti-Starvation),
         # aktualisieren aber den gepufferten Plan, damit keine überholte Aktion
         # ausgeführt wird.
         update_pending, restart = logic.debounce_decision(
-            plan, self._debounce_unsub is not None
+            plan,
+            self._debounce_unsub is not None,
+            window_age_s=self._debounce_age(),
+            max_wait_s=self.settings().debounce_max_wait_s,
         )
         if update_pending:
             self._pending_plan = plan
         if restart:
             self._start_debounce()
 
+    def _debounce_age(self) -> Optional[float]:
+        """Alter des laufenden R2-Fensters in Sekunden (benni_media#13)."""
+        if self._debounce_started_at is None:
+            return None
+        return max(0.0, self.hass.loop.time() - self._debounce_started_at)
+
     @callback
     def _start_debounce(self) -> None:
+        # Startzeit über das Re-Arm hinweg halten — sonst setzt jeder Burst-Trigger
+        # das Alter zurück und der Anti-Starvation-Deckel könnte nie greifen.
+        started = self._debounce_started_at
         self._cancel_debounce()
         window = self.settings().debounce_seconds
-        self._debounce_deadline = self.hass.loop.time() + window
+        now = self.hass.loop.time()
+        self._debounce_started_at = started if started is not None else now
+        self._debounce_deadline = now + window
         self._debounce_unsub = async_call_later(self.hass, window, self._fire_debounce)
 
     @callback
@@ -524,11 +570,15 @@ class MediaApplyCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             self._debounce_unsub()
             self._debounce_unsub = None
         self._debounce_deadline = None
+        # Fenster verworfen → Alter zurücksetzen. `_start_debounce` sichert die
+        # Startzeit vorher und stellt sie beim Re-Arm wieder her (#13).
+        self._debounce_started_at = None
 
     @callback
     def _fire_debounce(self, _now) -> None:
         self._debounce_unsub = None
         self._debounce_deadline = None
+        self._debounce_started_at = None
         self.hass.async_create_task(self._execute_serialized())
 
     def _debounce_remaining(self) -> Optional[float]:
@@ -585,6 +635,22 @@ class MediaApplyCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self.async_update_listeners()
         return self.status()
 
+    async def _execute_denon_volume(self, level: float) -> None:
+        """benni_media#13: einzelner harter Denon-Volume-Set, am R2-Fenster vorbei.
+
+        Läuft über dasselbe `_exec_lock` wie der normale Pfad — der Sofort-Set
+        darf sich nicht mit einer laufenden Ausführung überschneiden.
+        """
+        denon = self._entity_id(CONF_DENON_PLAYER)
+        if not denon:
+            return
+        async with self._exec_lock:
+            await self._svc(
+                "media_player", "volume_set",
+                {"entity_id": denon, "volume_level": level},
+            )
+        _LOGGER.debug("media_apply: Denon-Sofort-Volume %s → %.3f", denon, level)
+
     async def _execute_serialized(self) -> None:
         """Serialisiert die Geräte-Schaltung (R3: Queue statt Race). Es läuft
         immer der zuletzt gepufferte Plan (idempotent → latest-wins); ein zweiter
@@ -639,6 +705,9 @@ class MediaApplyCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             "ramp_total": self._ramp_total,
             "debounce": {
                 "window_s": s.debounce_seconds,
+                "max_wait_s": s.debounce_max_wait_s,
+                "age_s": self._debounce_age(),
+                "denon_immediate": s.denon_immediate,
                 "pending": self._debounce_unsub is not None,
                 "remaining_s": self._debounce_remaining(),
                 # Der eine konsolidierte, noch nicht ausgeführte Plan (latest-wins,

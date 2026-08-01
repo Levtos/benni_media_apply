@@ -23,7 +23,9 @@ from .const import (
     ACTION_PAUSE,
     ACTION_RESUME,
     ACTION_START_RADIO,
+    DEFAULT_DEBOUNCE_MAX_WAIT,
     DEFAULT_DEBOUNCE_SECONDS,
+    DEFAULT_DENON_IMMEDIATE,
     DEFAULT_DUCKED_LEVEL,
     DEFAULT_RAMP_STEP_DELAY,
     DEFAULT_RAMP_STEPS,
@@ -110,6 +112,10 @@ class RampSettings:
     tiny_delta: float = DEFAULT_TINY_DELTA
     ducked_level: float = DEFAULT_DUCKED_LEVEL
     debounce_seconds: float = DEFAULT_DEBOUNCE_SECONDS  # R2-Fenster (Coordinator-Timing)
+    # benni_media#13: Deckel fürs Neu-Anstoßen des R2-Fensters (Anti-Starvation).
+    debounce_max_wait_s: float = DEFAULT_DEBOUNCE_MAX_WAIT
+    # benni_media#13: Denon-Volume am Debounce vorbei (der AVR kann keine Rampe).
+    denon_immediate: bool = DEFAULT_DENON_IMMEDIATE
     wake_start_volume: float = DEFAULT_WAKE_START_VOLUME  # R23 HomePods-Startlautstärke
     wake_debounce_seconds: float = DEFAULT_WAKE_DEBOUNCE
 
@@ -310,7 +316,41 @@ def execution_mode(plan: "ApplyPlan") -> str:
     return EXEC_DEBOUNCE
 
 
-def debounce_decision(plan: "ApplyPlan", window_active: bool) -> tuple[bool, bool]:
+def take_immediate_denon(plan: "ApplyPlan", enabled: bool = True) -> Optional[float]:
+    """Entnimmt dem Plan den harten Denon-Volume-Set zur SOFORT-Ausführung.
+
+    benni_media#13 — Geräte-differenziert, NICHT global:
+
+    - **HomePods** können eine weiche Rampe fahren; die ist ausdrücklich gewollt
+      (sanftes Ein-/Ausblenden, R23-Wake) und bleibt vollständig unangetastet:
+      Rampe UND R2-Debounce gelten für die HomePods unverändert weiter.
+    - **Der Denon** kann technisch keine sinnvolle Rampe abbilden — er bekommt
+      ohnehin einen einzelnen harten `volume_set`. Für ihn ist das Debounce-
+      Fenster reine Verzögerung: in der Evidenz lag das gültige Ziel 27 % um
+      ``22:23:43.872`` an, der AVR stand aber erst ``22:23:49.176`` darauf
+      (**+5.3 s**), obwohl nur EIN Service-Call nötig war.
+
+    Sobald Zielkontext und Zielwert feststehen, geht der Denon-Set deshalb sofort
+    raus. Mutiert den Plan (setzt ``denon_set`` auf None), damit der verbleibende
+    Rest normal gepuffert wird und der Wert nach dem Fenster nicht ein zweites
+    Mal geschrieben wird (AVR-OSD-Flackern). Der Idempotenz-Anker
+    ``ApplyState.applied_denon`` wurde von `decide_apply` bereits fortgeschrieben.
+
+    ``enabled=False`` → altes Verhalten (Denon läuft mit durchs Fenster).
+    """
+    if not enabled:
+        return None
+    value = plan.denon_set
+    plan.denon_set = None
+    return value
+
+
+def debounce_decision(
+    plan: "ApplyPlan",
+    window_active: bool,
+    window_age_s: Optional[float] = None,
+    max_wait_s: Optional[float] = None,
+) -> tuple[bool, bool]:
     """R2/R3 Pending-Buchführung für den EXEC_DEBOUNCE-Fall (pure). Return
     ``(update_pending, restart_window)``.
 
@@ -322,9 +362,24 @@ def debounce_decision(plan: "ApplyPlan", window_active: bool) -> tuple[bool, boo
       stale pause bisher nicht canceln). Fenster NICHT neu anstoßen → Anti-
       Starvation bleibt, latest-wins gilt jetzt auch fürs Zurücknehmen.
     - No-Op-Plan ohne laufendes Fenster → nichts tun.
+
+    benni_media#13 — Anti-Starvation-Deckel: Bisher stieß JEDER Plan mit Arbeit
+    das Fenster neu an. Ein Szenario-Übergang ist aber genau ein Trigger-BURST,
+    jeder Schritt ein neuer Plan mit Arbeit — die Ausführung wurde dadurch immer
+    weiter nach hinten geschoben, statt nach dem Fenster einmal konsolidiert zu
+    laufen. Ist das laufende Fenster älter als ``max_wait_s``, wird weiter
+    gepuffert (latest-wins bleibt), das Fenster aber NICHT mehr verlängert. Ohne
+    ``window_age_s``/``max_wait_s`` (Alt-Aufrufer, Tests) gilt das Verhalten
+    unverändert.
     """
     if plan.has_work:
-        return True, True
+        starved = (
+            window_active
+            and window_age_s is not None
+            and max_wait_s is not None
+            and window_age_s >= max_wait_s
+        )
+        return True, not starved
     if window_active:
         return True, False
     return False, False
