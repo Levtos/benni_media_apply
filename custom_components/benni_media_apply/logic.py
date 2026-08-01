@@ -293,6 +293,35 @@ def _direct(current: Optional[float], target: Optional[float]) -> list[float]:
     return [t]
 
 
+def homepods_volume_addressable(action: str, hp_state: Optional[str]) -> bool:
+    """benni_media#16 — Darf die HomePods-Gruppe jetzt einen Volume-Befehl bekommen?
+
+    Ein AirPlay-/Music-Assistant-Gruppen-Player nimmt ``volume_set`` NICHT neutral
+    entgegen: Auf einem pausierten bzw. ``idle`` Player **weckt** ein ``volume_set``
+    die Wiedergabe wieder auf, und hörbar ist der Pegel dort ohnehin nicht.
+
+    Belegte Live-Evidenz (Recorder, 2026-08-01, Musik→TV): Nach der Pause
+    (``15:28:22`` Gruppe ``idle``) lief die Volume-Rampe gegen ``0.0`` auf dem
+    pausierten Gruppen-Player WEITER (0.42 → 0.39 → … → 0.01, 1-s-Takt). Genau bei
+    zwei dieser ``volume_set``-Schritte sprang die Gruppe zurück auf ``playing``
+    (``15:28:39`` bei 0.12, ``15:28:45`` bei 0.07); die Policy re-pausierte jedes
+    Mal → ``pause_homepods`` feuerte 3× und die Gruppe flappte, obwohl der
+    TV-Kontext stabil war. Im System-Log scheiterten dieselben ``volume_set
+    volume=0.0``-Calls zusätzlich.
+
+    Regel: Volume nur, wenn wir die Gruppe gerade STARTEN (``resume``/``start_radio``
+    — das Setzen der Start-/Wake-Lautstärke gehört zum Start) ODER sie bereits
+    ``playing`` ist. Beim ``pause`` nie — die Pause ist der Stop-Mechanismus, nicht
+    ``volume 0`` (Kernsemantik aus #16). Die 16×1-s-Wake/Resume-Rampe bleibt davon
+    unberührt (sie läuft über ``resume``/``start_radio``).
+    """
+    if action == ACTION_PAUSE:
+        return False
+    if action in (ACTION_RESUME, ACTION_START_RADIO):
+        return True
+    return hp_state in PLAYER_PLAYING_VALUES
+
+
 # --------------------------------------------------------------------------- #
 # Ausführungs-Modus (R2 Debounce / R3 Queue-statt-Race)
 # --------------------------------------------------------------------------- #
@@ -484,12 +513,17 @@ def decide_apply(
     else:
         p.homepods_action = ACTION_NONE
 
+    # benni_media#16 — Volume-Befehle nur an eine spielende bzw. gerade
+    # gestartete HomePods-Gruppe, nie an eine pausierte/idle (das weckt den
+    # AirPlay-Player und ist unhörbar). Gilt für Restore- UND Normalfall.
+    hp_volume_ok = homepods_volume_addressable(p.homepods_action, inp.homepods_state)
+
     # ----- Volume (nur wenn die Policy es erlaubt) -----
     if inp.volume_apply_allowed:
         p.quiet_override = inp.quiet_mode
         if quiet_exit and new_state.pre_quiet_homepods is not None:
             # R20: Quiet-Ende → Restore auf Pre-Quiet (HomePods rampen, Denon hart).
-            if inp.homepods_configured and inp.homepods_state in PLAYER_ADDRESSABLE_VALUES:
+            if inp.homepods_configured and hp_volume_ok:
                 p.homepods_levels = ramp_levels(
                     inp.homepods_volume, new_state.pre_quiet_homepods,
                     settings.ramp_steps, settings.tiny_delta,
@@ -516,7 +550,7 @@ def decide_apply(
             if (
                 inp.homepods_configured
                 and inp.homepods_target is not None
-                and inp.homepods_state in PLAYER_ADDRESSABLE_VALUES
+                and hp_volume_ok
             ):
                 if inp.quiet_mode:
                     # R20: Quiet → hart/direkt (kein Ramp), laufenden Ramp abbrechen.
