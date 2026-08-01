@@ -133,6 +133,12 @@ CONF_PLANNED_STATION_PLAYING: Final[str] = "planned_station_playing_entity"  # b
 # nativ in media_state (switch-Entität) — apply verwaltet ihn nicht mehr.
 # Geräte (Apply-Targets):
 CONF_HOMEPODS_PLAYER: Final[str] = "homepods_player_entity"
+# benni_media#16 — Volume geht PRO POD, nicht auf die Gruppe (Lastenheft
+# „pro Gerät einzeln, kein Gruppen-Call"): ein `volume_set` auf die AirPlay-Sync-
+# GRUPPE weckt einen pausierten Verbund wieder auf, auf die einzelnen Pods nicht.
+# Pause/Resume/Radio laufen weiter auf der Gruppe (CONF_HOMEPODS_PLAYER); nur der
+# Volume-Set/Ramp adressiert diese Pod-Liste. Leer/ungebunden ⇒ Fallback Gruppe.
+CONF_HOMEPODS_PODS: Final[str] = "homepods_pod_entities"
 CONF_DENON_PLAYER: Final[str] = "denon_player_entity"
 CONF_SUBWOOFER_SWITCH: Final[str] = "subwoofer_switch_entity"
 
@@ -172,7 +178,11 @@ WATCH_KEYS: Final[tuple[str, ...]] = (
     CONF_MEDIA_DEVICE, CONF_TV_PLAYER, CONF_SLEEP_TV_EXTEND,
     CONF_WAKE_TRIGGERS,
 )
-ENTITY_SLOT_KEYS: Final[tuple[str, ...]] = WATCH_KEYS
+# benni_media#16 — die Pods sind ein Config-Slot, werden aber NICHT beobachtet:
+# der Ramp setzt ihre Lautstärke, und ein State-Watch darauf würde pro Schritt
+# einen Recompute (Selbst-Trigger-Loop) auslösen. Darum nur im Schema, nicht in
+# WATCH_KEYS.
+ENTITY_SLOT_KEYS: Final[tuple[str, ...]] = WATCH_KEYS + (CONF_HOMEPODS_PODS,)
 
 # --------------------------------------------------------------------------- #
 # Profil-Map (Auto-Bind). benni = Live-IDs der Einhornzentrale. Existenz-Filter
@@ -200,6 +210,12 @@ PROFILE_PREFILL: Final[dict[str, dict[str, Any]]] = {
         CONF_MANUAL_PLAYBACK: "binary_sensor.media_manual_playback_active",
         CONF_PLANNED_STATION_PLAYING: "binary_sensor.media_radio_playing_planned_station",
         CONF_HOMEPODS_PLAYER: "media_player.living_homepods_ma_group",
+        # benni_media#16 — die einzelnen AirPlay-Pods der Gruppe (Black defekt/
+        # entfernt → aktuell 2). Volume/Ramp adressiert diese, nicht die Gruppe.
+        CONF_HOMEPODS_PODS: [
+            "media_player.living_homepod_blue_ma_airplay",
+            "media_player.living_homepod_grey_ma_airplay",
+        ],
         CONF_DENON_PLAYER: "media_player.living_denon",
         CONF_SUBWOOFER_SWITCH: "switch.living_subwoofer_plug",
         # Post-FLEET-54: an Core-Devices-Master/core_state gebunden

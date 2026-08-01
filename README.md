@@ -8,6 +8,11 @@ kann keine Rampe — harter Set, und seit benni_media#13 am R2-Fenster vorbei.
 Volume-Befehle gehen nur an eine spielende bzw. gerade gestartete HomePod-Gruppe,
 nie an eine pausierte/idle (benni_media#16 — `volume_set` weckt den AirPlay-Player
 und ist dort unhörbar; Pause ist der Stop-Mechanismus, nicht `volume 0`).
+HomePods-Volume/Ramp adressiert die **einzelnen Pods** (`homepods_pod_entities`,
+konfigurierbar), nicht die Gruppe — Lastenheft „pro Gerät einzeln, kein Gruppen-
+Call": ein `volume_set` auf die AirPlay-Sync-Gruppe weckt einen pausierten
+Verbund, auf die Pods nicht. Pause/Resume/Radio bleiben auf der Gruppe. Der Ramp
+ist bidirektional (Ramp-up bei steigendem, Fade-down bei sinkendem Ziel).
 
 Muster: light_policy → scene_presets. Policy denkt, Apply tut.
 

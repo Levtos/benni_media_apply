@@ -50,6 +50,7 @@ from .const import (
     CONF_DENON_POWER,
     CONF_DUCKED_LEVEL,
     CONF_HOMEPODS_PLAYER,
+    CONF_HOMEPODS_PODS,
     CONF_HOMEPODS_RESUME_ALLOWED,
     CONF_HOMEPODS_SHOULD_PAUSE,
     CONF_MANUAL_PLAYBACK,
@@ -202,6 +203,19 @@ class MediaApplyCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             self.entry.options.get(key)
             or self.entry.data.get(key)
             or PROFILE_PREFILL.get(self._profile, {}).get(key)
+        )
+
+    def _homepods_volume_targets(self) -> list[str]:
+        """benni_media#16 — Volume geht PRO POD (Lastenheft: kein Gruppen-Call).
+
+        Ein `volume_set` auf die AirPlay-Sync-GRUPPE weckt einen pausierten Verbund
+        wieder auf (belegter Live-Bug, 15:28); auf die einzelnen Pods nicht. Pause/
+        Resume/Radio bleiben auf der Gruppe (nur ein Player-Call), nur der Volume-
+        Set/Ramp adressiert die Pods. Sind keine Pods gebunden, Fallback auf die
+        Gruppe (non-regressiv gegenüber v0.18.x)."""
+        return logic.volume_target_entities(
+            self._entity_id(CONF_HOMEPODS_PODS),
+            self._entity_id(CONF_HOMEPODS_PLAYER),
         )
 
     def _watched_entities(self) -> list[str]:
@@ -871,17 +885,18 @@ class MediaApplyCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                     radio = self._opts.get(CONF_RADIO_START_SCRIPT, DEFAULT_RADIO_START_SCRIPT)
                     await self._svc("script", "turn_on", {"entity_id": radio})
 
-        # ----- HomePods-Volume (Ramp oder direkt) -----
-        if plan.homepods_levels and hp:
+        # ----- HomePods-Volume (Ramp oder direkt) — PRO POD (benni_media#16) -----
+        vol_targets = self._homepods_volume_targets()
+        if plan.homepods_levels and vol_targets:
             self._cancel_ramp()
             if plan.homepods_ramp:
                 self._ramp_task = self.hass.async_create_task(
-                    self._run_ramp(hp, list(plan.homepods_levels), self.settings().ramp_step_delay_s)
+                    self._run_ramp(vol_targets, list(plan.homepods_levels), self.settings().ramp_step_delay_s)
                 )
             else:
                 await self._svc(
                     "media_player", "volume_set",
-                    {"entity_id": hp, "volume_level": plan.homepods_levels[-1]},
+                    {"entity_id": vol_targets, "volume_level": plan.homepods_levels[-1]},
                 )
 
         # ----- Denon-Volume (hart) -----
@@ -917,8 +932,14 @@ class MediaApplyCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         if self.data is not None:
             self.async_set_updated_data({**self.data, "ramp_active": active})
 
-    async def _run_ramp(self, entity_id: str, levels: list[float], delay: float) -> None:
-        """HomePods-Volume-Ramp: Schritt für Schritt mit Delay, abbrechbar."""
+    async def _run_ramp(
+        self, entity_ids: list[str] | str, levels: list[float], delay: float
+    ) -> None:
+        """HomePods-Volume-Ramp: Schritt für Schritt mit Delay, abbrechbar.
+
+        benni_media#16 — `entity_ids` ist die Pod-Liste (kein Gruppen-Call). Ein
+        einzelner `volume_set` mit Entity-Liste setzt alle Pods gemeinsam; ein
+        String bleibt als Fallback (Gruppe) unterstützt."""
         self._ramp_total = len(levels)
         self._set_ramp_active(True)
         try:
@@ -926,13 +947,13 @@ class MediaApplyCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 self._ramp_step = i + 1
                 await self.hass.services.async_call(
                     "media_player", "volume_set",
-                    {"entity_id": entity_id, "volume_level": lv}, blocking=True,
+                    {"entity_id": entity_ids, "volume_level": lv}, blocking=True,
                 )
                 await asyncio.sleep(delay)
         except asyncio.CancelledError:
             raise
         except Exception as err:  # noqa: BLE001
-            _LOGGER.warning("media_apply: ramp on %s failed: %s", entity_id, err)
+            _LOGGER.warning("media_apply: ramp on %s failed: %s", entity_ids, err)
         finally:
             self._set_ramp_active(False)
 
@@ -1073,8 +1094,9 @@ class MediaApplyCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         """R23: HomePods auf Startlautstärke → Debounce → Ramp auf das aktuelle
         media_policy-Ziel (`volume_target_homepods`). Abbrechbar; nutzt die normale
         Ramp-Maschine für den Hochlauf."""
-        hp = self._entity_id(CONF_HOMEPODS_PLAYER)
-        if not hp:
+        # benni_media#16 — Wake-Volume ebenfalls PRO POD (nicht auf die Gruppe).
+        pods = self._homepods_volume_targets()
+        if not pods:
             return
         s = self.settings()
         start = round(max(0.0, min(1.0, s.wake_start_volume)), 3)
@@ -1084,7 +1106,7 @@ class MediaApplyCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             # (auf derselben Wake-Flanke gestartete) Radio-Autostart Ton ausgibt.
             await self._svc(
                 "media_player", "volume_set",
-                {"entity_id": hp, "volume_level": start}, blocking=True,
+                {"entity_id": pods, "volume_level": start}, blocking=True,
             )
             await asyncio.sleep(max(0.0, s.wake_debounce_seconds))
             if logic.media_block_reason(self._build_inputs()):
@@ -1096,9 +1118,9 @@ class MediaApplyCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             if levels:
                 self._cancel_ramp()
                 self._ramp_task = self.hass.async_create_task(
-                    self._run_ramp(hp, levels, s.ramp_step_delay_s)
+                    self._run_ramp(pods, levels, s.ramp_step_delay_s)
                 )
-            _LOGGER.info("media_apply: R23 Wake-Sequenz %s → %.2f → Ramp auf %.2f", hp, start, target)
+            _LOGGER.info("media_apply: R23 Wake-Sequenz %s → %.2f → Ramp auf %.2f", pods, start, target)
         except asyncio.CancelledError:
             raise
         finally:
