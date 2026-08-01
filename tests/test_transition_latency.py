@@ -259,3 +259,70 @@ def test_quiet_volume_stays_direct_not_ramped():
 def test_shadow_mode_executes_nothing():
     plan, _ = L.decide_apply(_vol_inp(apply_enabled=False))
     assert L.execution_mode(plan) == C.EXEC_SHADOW
+
+
+# --------------------------------------------------------------------------- #
+# 6. TV-Übernahme bei laufender HomePods-Musik (benni_media#16, Live 2026-08-01)
+# --------------------------------------------------------------------------- #
+# Belegte Kette (Recorder, LAN-Test): TV-Master aktiv 13:16:50.887 →
+# media_context `tv` 13:17:23.483 (media_state-Starvation, PR benni_media_state#19)
+# → Policy/Plan `pause_homepods` 13:17:23.491/.500 (<20 ms) → Gruppe `idle`
+# 13:17:44.507 — exakt EIN R2-Fenster (5 s) nach dem letzten ~3-s-Watt-Attribut-
+# Event des TV-Masters. Der Pause-Dispatch wurde also vom unbegrenzten Re-Arm
+# verhungert; MA/HomePods verarbeiteten die Pause danach in ~25 ms. Genau dieses
+# Verhungern deckelt `debounce_max_wait_seconds` — hier festgehalten für den
+# PAUSE-Pfad (nicht nur Resume).
+def _pause_plan():
+    p = L.ApplyPlan()
+    p.execute = True
+    p.homepods_action = C.ACTION_PAUSE
+    assert p.has_work
+    return p
+
+
+def test_tv_takeover_pause_is_an_explicit_command_not_volume_zero():
+    """`volume_set(0)` ist beim HomePod KEIN Pause-Ersatz — der Plan muss die
+    explizite Pause-Aktion tragen, unabhängig vom Volume-Ziel."""
+    inp = _vol_inp(
+        action=C.ACTION_PAUSE,
+        homepods_should_pause=True,
+        homepods_volume=0.45,
+        homepods_target=0.0,
+    )
+    plan, _ = L.decide_apply(inp)
+    assert plan.homepods_action == C.ACTION_PAUSE
+
+
+def test_pause_plan_rearms_while_the_window_is_young():
+    """Normalfall unverändert: junger Burst bündelt auch Pause-Pläne."""
+    assert L.debounce_decision(_pause_plan(), True, window_age_s=1.0, max_wait_s=8.0) == (
+        True,
+        True,
+    )
+
+
+def test_pause_dispatch_is_bounded_under_a_sustained_watt_stream():
+    """Der ~3-s-Watt-Attribut-Strom des TV-Masters darf den Pause-Dispatch
+    nicht mehr unbegrenzt verhungern lassen (54-s-Vorfall)."""
+    update_pending, restart = L.debounce_decision(
+        _pause_plan(), True, window_age_s=8.0, max_wait_s=8.0
+    )
+    assert update_pending is True   # latest-wins bleibt
+    assert restart is False         # Fenster läuft aus → Pause geht raus
+
+
+def test_immediate_denon_extraction_keeps_the_pause_in_the_plan():
+    """TV-Übernahme: Denon-Sofort-Set darf die HomePods-Pause nicht verlieren."""
+    inp = _vol_inp(
+        action=C.ACTION_PAUSE,
+        homepods_should_pause=True,
+        homepods_volume=0.45,
+        homepods_target=0.0,
+        denon_volume=0.0,
+        denon_target=0.27,
+    )
+    plan, _ = L.decide_apply(inp)
+    assert plan.homepods_action == C.ACTION_PAUSE
+    L.take_immediate_denon(plan)
+    assert plan.homepods_action == C.ACTION_PAUSE
+    assert plan.has_work is True
