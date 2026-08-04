@@ -627,7 +627,18 @@ def decide_apply(
             # — dann ist das Ist-Volume nicht lesbar (`denon_volume` None), also nur
             # auf echte Ziel-Änderung schreiben (Anker `applied_denon`), sonst würde
             # jeder Watt-Report denselben Pegel neu setzen (Volume-OSD-Flackern).
-            if inp.denon_configured and inp.denon_target is not None:
+            #
+            # benni_media#16 — den Denon NIE auf 0 setzen (mirror alte Logik
+            # `media_orchestrator_volumes_v4`: `dn_target > 0`). Ziel 0.0 heißt
+            # „Denon soll still/aus sein", NICHT `volume_set(0)`: sonst schaltet
+            # apply den frisch per HDMI-CEC eingeschalteten AVR (feste Einschalt-
+            # lautstärke 0.3) im Übergangsfenster stumm, solange der Kontext noch
+            # Musik ist (`denon_target = 0.0`), und muss ihn danach wieder
+            # hochsetzen (belegt 03.08. 23:46: >45 s bei 0). Bei Ziel 0.0 den AVR in
+            # Ruhe lassen — er wird nur auf ein positives Ziel korrigiert. Das
+            # physische Aus läuft über ACTION_DENON_OFF / Nachlauf, nicht über
+            # `volume_set(0)`.
+            if inp.denon_configured and inp.denon_target is not None and inp.denon_target > 0:
                 if inp.denon_state in PLAYER_ADDRESSABLE_VALUES:
                     denon = _direct(inp.denon_volume, inp.denon_target)
                     p.denon_set = denon[0] if denon else None
