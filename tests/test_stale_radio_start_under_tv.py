@@ -129,3 +129,53 @@ def test_other_gates_still_block_even_with_tv_off():
     assert L.should_autostart_radio(_ready(manual_playback=True, **off)) is False
     assert L.should_autostart_radio(_ready(planned_station_playing=True, **off)) is False
     assert L.should_autostart_radio(_ready(bio_sleep=True, **off)) is False
+
+
+# --------------------------------------------------------------------------- #
+# 5. Generalisierung auf den Audio-Owner (benni_media#16, Live 2026-08-03 01:28)
+# --------------------------------------------------------------------------- #
+# private_time-Flap: ein verzögerter Radio-Resume (Trigger B, durch die manual-off-
+# Flanke beim Pausieren gearmt) startete GAY.FM MITTEN im private_time, weil der
+# Guard nur den TV prüfte (TV aus → nicht geblockt). Jetzt blockt jeder
+# konkurrierende Owner, nicht nur der TV.
+def test_private_stack_owner_blocks_music_start():
+    assert L.screen_blocks_music_start(
+        _ready(tv_player_state="off", tv_power_on=False, audio_owner="private_stack")
+    ) is True
+
+
+def test_tv_denon_owner_blocks_even_if_tv_signal_unknown():
+    assert L.screen_blocks_music_start(
+        _ready(tv_player_state=None, tv_power_on=None, audio_owner="tv_denon")
+    ) is True
+
+
+def test_homepods_and_none_owner_do_not_block():
+    for owner in ("homepods", "none", "", None, "unknown", "unavailable"):
+        assert L.screen_blocks_music_start(
+            _ready(tv_player_state="off", tv_power_on=False, audio_owner=owner)
+        ) is False, owner
+
+
+def test_autostart_blocked_during_private_time_owner():
+    """Der exakte 01:28-Fall: TV aus, Owner private_stack, manual_playback off,
+    radio_ready → der verzögerte Resume darf NICHT starten."""
+    inp = _ready(
+        tv_player_state="off", tv_power_on=False,
+        audio_owner="private_stack", manual_playback=False,
+    )
+    assert L.should_autostart_radio(inp) is False
+
+
+def test_autostart_allowed_when_owner_none_and_tv_off():
+    """Legitimer Resume (nichts besitzt Audio) bleibt erlaubt."""
+    assert L.should_autostart_radio(
+        _ready(tv_player_state="off", tv_power_on=False, audio_owner="none")
+    ) is True
+
+
+def test_autostart_allowed_when_owner_unbound_non_regressive():
+    """Owner ungebunden/unbekannt blockt nicht (non-regressiv)."""
+    assert L.should_autostart_radio(
+        _ready(tv_player_state="off", tv_power_on=False, audio_owner=None)
+    ) is True

@@ -103,6 +103,10 @@ class Inputs:
     # control#3: Private Time aktiv (audio_owner == private_stack). Steuert den
     # Private-Exit-Denon-Off-Delay + die Wake-Sperre. None = ungebunden/unbekannt.
     private_active: Optional[bool] = None
+    # benni_media#16: roher audio_owner (media_policy). Ein konkurrierender Owner
+    # (private_stack/tv_denon/…) sperrt den (verzögerten) Radio-Autostart, nicht
+    # nur der TV. None/unbekannt = non-regressiv (kein Block).
+    audio_owner: Optional[str] = None
     # control#3: HomePod-Start sperren, solange der Private-Exit-Delay laeuft und
     # der Denon noch an ist (kein kurzer Parallelbetrieb). Coordinator setzt es.
     suppress_homepods_start: bool = False
@@ -249,8 +253,20 @@ def screen_blocks_music_start(inp: "Inputs") -> bool:
     Musikstart ausgelöst. Geprüft wird der STABILE Ist-Zustand (WebOS primär,
     Watt-Fallback über `_tv_is_off`), nicht ein veraltetes wartendes Startsignal —
     damit robust gegen den kurzen TV-Master-Flacker. ``None`` (TV unbekannt) blockt
-    NICHT (non-regressiv)."""
-    return _tv_is_off(inp) is False
+    NICHT (non-regressiv).
+
+    benni_media#16 — Generalisierung auf den Audio-Owner (nicht nur TV): belegt
+    03.08. 01:28 startete ein verzögerter Radio-Resume (Trigger B, durch die
+    manual-off-Flanke beim Pausieren für private_time gearmt) GAY.FM MITTEN im
+    private_time, weil dieser Guard nur den TV prüfte (TV war aus →
+    ``audio_owner=private_stack``, aber nicht geblockt) → Flap. Jetzt blockt
+    zusätzlich JEDER konkurrierende Owner: alles außer ``homepods``/``none`` (und
+    unbekannt/unbound → non-regressiv). Deckt private_stack, tv_denon und künftige
+    Konsumenten (ps5/pc) ab."""
+    if _tv_is_off(inp) is False:
+        return True
+    owner = (inp.audio_owner or "").strip().lower()
+    return owner not in ("", "unknown", "unavailable", "homepods", "none")
 
 
 def should_autostart_radio(inp: "Inputs") -> bool:
