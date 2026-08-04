@@ -423,6 +423,8 @@ class MediaApplyCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             tv_player_state=self._state(CONF_TV_PLAYER),
             # control#3: Private Time aus dem media_policy audio_owner-Sensor.
             private_active=self._state(CONF_AUDIO_OWNER) == AUDIO_OWNER_PRIVATE,
+            # benni_media#16: roher Owner fürs generalisierte Musikstart-Gate.
+            audio_owner=self._state(CONF_AUDIO_OWNER),
         )
 
     def _compute(self, *, force_execute: bool = False) -> dict[str, Any]:

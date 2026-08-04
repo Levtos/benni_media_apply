@@ -27,11 +27,13 @@ HomePods-Action (pause/play; `start_radio` → delegiert an ein Script),
 Volume mit Ramps, Subwoofer on/off. Restore (R20), Denon-Nachlauf (R13/R14),
 Sleep-TV-Off (R24/R25), Radio-Katalog-Port, TV-WoL, FIFO-Queue folgen.
 
-Radio-Autostart/-Resume startet nie Musik, solange ein Bildschirm-Stack (TV)
-das Audio besitzt (benni_media#16): `should_autostart_radio` prüft zusätzlich
-`_tv_is_off`, ein wartender verzögerter Resume wird bei TV-Übernahme abgebrochen,
+Radio-Autostart/-Resume startet nie Musik, solange ein **konkurrierender
+Audio-Owner** das Audio besitzt (benni_media#16): `should_autostart_radio` blockt
+bei aktivem TV **und** bei jedem Owner außer `homepods`/`none` (z. B.
+`private_stack`, `tv_denon`). Ein wartender verzögerter Resume wird abgebrochen,
 und unmittelbar vor dem echten Play-Kommando wird der stabile Kontext erneut
-geprüft — robust gegen kurzes TV-Master-Flackern beim Hochfahren.
+geprüft — robust gegen kurzes TV-Master-Flackern. Owner unbekannt/unbound blockt
+nicht (non-regressiv).
 
 Siehe `FAHRPLAN.md`.
 
