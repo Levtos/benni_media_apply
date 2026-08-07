@@ -253,6 +253,40 @@ def resolve_radio_uri(station: Optional[str]) -> Optional[str]:
     return RADIO_CATALOG.get(station)
 
 
+def screen_blocks_music_start(inp: "Inputs") -> bool:
+    """benni_media#16 — Besitzt gerade ein Bildschirm-Stack (TV) das Audio, sodass
+    kein Musikstart erfolgen darf?
+
+    Belegter Live-Folgefehler (2026-08-01, TV-Start ~22:17): Der TV-Master
+    flackerte beim Hochfahren extern (active→off→active, Watt-Dip auf 43 W). Im
+    kurzen Falsch-Musik-Fenster endete die manuelle Wiedergabe (`manual_playback`
+    on→off, 22:17:54) und armte den verzögerten Radio-Resume (Trigger B,
+    `RADIO_RESUME_DELAY` 10 s). Als er 22:18:04 feuerte, war der TV längst stabil
+    aktiv (`audio_owner=tv_denon`, `homepods_resume_allowed=off`), aber weder
+    `should_autostart_radio` (TV-blind) noch `action==PAUSE` (Gruppe schon idle →
+    `action=none`) fingen das ab → GAY.FM startete unter laufendem TV und musste
+    erneut pausiert werden.
+
+    Regel: Ist der TV zum Ausführungszeitpunkt an, wird kein (verzögerter)
+    Musikstart ausgelöst. Geprüft wird der STABILE Ist-Zustand (WebOS primär,
+    Watt-Fallback über `_tv_is_off`), nicht ein veraltetes wartendes Startsignal —
+    damit robust gegen den kurzen TV-Master-Flacker. ``None`` (TV unbekannt) blockt
+    NICHT (non-regressiv).
+
+    benni_media#16 — Generalisierung auf den Audio-Owner (nicht nur TV): belegt
+    03.08. 01:28 startete ein verzögerter Radio-Resume (Trigger B, durch die
+    manual-off-Flanke beim Pausieren für private_time gearmt) GAY.FM MITTEN im
+    private_time, weil dieser Guard nur den TV prüfte (TV war aus →
+    ``audio_owner=private_stack``, aber nicht geblockt) → Flap. Jetzt blockt
+    zusätzlich JEDER konkurrierende Owner: alles außer ``homepods``/``none`` (und
+    unbekannt/unbound → non-regressiv). Deckt private_stack, tv_denon und künftige
+    Konsumenten (ps5/pc) ab."""
+    if _tv_is_off(inp) is False:
+        return True
+    owner = (inp.audio_owner or "").strip().lower()
+    return owner not in ("", "unknown", "unavailable", "homepods", "none")
+
+
 def radio_dispatch_admit(
     state: RadioDispatchState,
     now: float,
