@@ -23,7 +23,12 @@ from .const import (
     ACTION_PAUSE,
     ACTION_RESUME,
     ACTION_START_RADIO,
+    DENON_CONSUMER_POWER_CHECKED,
+    DEV_LABEL_PC,
+    DEV_LABEL_TV,
+    DEFAULT_DEBOUNCE_MAX_WAIT,
     DEFAULT_DEBOUNCE_SECONDS,
+    DEFAULT_DENON_IMMEDIATE,
     DEFAULT_DUCKED_LEVEL,
     DEFAULT_RADIO_DISPATCH_COOLDOWN,
     DEFAULT_RADIO_DISPATCH_MAX_BACKOFF,
@@ -100,6 +105,10 @@ class Inputs:
     # control#3: Private Time aktiv (audio_owner == private_stack). Steuert den
     # Private-Exit-Denon-Off-Delay + die Wake-Sperre. None = ungebunden/unbekannt.
     private_active: Optional[bool] = None
+    # benni_media#16: roher audio_owner (media_policy). Ein konkurrierender Owner
+    # (private_stack/tv_denon/…) sperrt den (verzögerten) Radio-Autostart, nicht
+    # nur der TV. None/unbekannt = non-regressiv (kein Block).
+    audio_owner: Optional[str] = None
     # control#3: HomePod-Start sperren, solange der Private-Exit-Delay laeuft und
     # der Denon noch an ist (kein kurzer Parallelbetrieb). Coordinator setzt es.
     suppress_homepods_start: bool = False
@@ -112,6 +121,10 @@ class RampSettings:
     tiny_delta: float = DEFAULT_TINY_DELTA
     ducked_level: float = DEFAULT_DUCKED_LEVEL
     debounce_seconds: float = DEFAULT_DEBOUNCE_SECONDS  # R2-Fenster (Coordinator-Timing)
+    # benni_media#13: Deckel fürs Neu-Anstoßen des R2-Fensters (Anti-Starvation).
+    debounce_max_wait_s: float = DEFAULT_DEBOUNCE_MAX_WAIT
+    # benni_media#13: Denon-Volume am Debounce vorbei (der AVR kann keine Rampe).
+    denon_immediate: bool = DEFAULT_DENON_IMMEDIATE
     wake_start_volume: float = DEFAULT_WAKE_START_VOLUME  # R23 HomePods-Startlautstärke
     wake_debounce_seconds: float = DEFAULT_WAKE_DEBOUNCE
 
@@ -317,7 +330,8 @@ def should_autostart_radio(inp: "Inputs") -> bool:
     geplante Station NICHT eh schon spielt. Der Trigger (Wake-Flanke / manual-off-
     Flanke) sowie das Latch-Lösen liegen im Coordinator. None (ungebunden) = blockt
     (radio_ready muss explizit True sein → kein Autostart ohne validen Sender).
-    Während `bio_sleep` bleiben automatische Starts und Resumes gesperrt (#45)."""
+    Während `bio_sleep` bleiben automatische Starts und Resumes gesperrt (#45).
+    benni_media#16: bei aktivem TV wird nie Musik gestartet (screen_blocks_music_start)."""
     return (
         media_block_reason(inp) is None
         and not presence_holds(inp)
@@ -325,6 +339,7 @@ def should_autostart_radio(inp: "Inputs") -> bool:
         and inp.radio_ready is True
         and inp.manual_playback is not True
         and inp.planned_station_playing is not True
+        and not screen_blocks_music_start(inp)
     )
 
 
@@ -390,6 +405,51 @@ def _direct(current: Optional[float], target: Optional[float]) -> list[float]:
     return [t]
 
 
+def homepods_volume_addressable(action: str, hp_state: Optional[str]) -> bool:
+    """benni_media#16 — Darf die HomePods-Gruppe jetzt einen Volume-Befehl bekommen?
+
+    Ein AirPlay-/Music-Assistant-Gruppen-Player nimmt ``volume_set`` NICHT neutral
+    entgegen: Auf einem pausierten bzw. ``idle`` Player **weckt** ein ``volume_set``
+    die Wiedergabe wieder auf, und hörbar ist der Pegel dort ohnehin nicht.
+
+    Belegte Live-Evidenz (Recorder, 2026-08-01, Musik→TV): Nach der Pause
+    (``15:28:22`` Gruppe ``idle``) lief die Volume-Rampe gegen ``0.0`` auf dem
+    pausierten Gruppen-Player WEITER (0.42 → 0.39 → … → 0.01, 1-s-Takt). Genau bei
+    zwei dieser ``volume_set``-Schritte sprang die Gruppe zurück auf ``playing``
+    (``15:28:39`` bei 0.12, ``15:28:45`` bei 0.07); die Policy re-pausierte jedes
+    Mal → ``pause_homepods`` feuerte 3× und die Gruppe flappte, obwohl der
+    TV-Kontext stabil war. Im System-Log scheiterten dieselben ``volume_set
+    volume=0.0``-Calls zusätzlich.
+
+    Regel: Volume nur, wenn wir die Gruppe gerade STARTEN (``resume``/``start_radio``
+    — das Setzen der Start-/Wake-Lautstärke gehört zum Start) ODER sie bereits
+    ``playing`` ist. Beim ``pause`` nie — die Pause ist der Stop-Mechanismus, nicht
+    ``volume 0`` (Kernsemantik aus #16). Die 16×1-s-Wake/Resume-Rampe bleibt davon
+    unberührt (sie läuft über ``resume``/``start_radio``).
+    """
+    if action == ACTION_PAUSE:
+        return False
+    if action in (ACTION_RESUME, ACTION_START_RADIO):
+        return True
+    return hp_state in PLAYER_PLAYING_VALUES
+
+
+def volume_target_entities(pods: Any, group: Optional[str]) -> list[str]:
+    """benni_media#16 — Ziel-Entities für HomePods-Volume/Ramp.
+
+    Lastenheft „pro Gerät einzeln (kein Gruppen-Call)": ein `volume_set` auf die
+    AirPlay-Sync-GRUPPE weckt einen pausierten Verbund wieder auf (belegter Live-
+    Bug), auf die einzelnen Pods nicht. Ist die Pod-Liste gebunden, wird sie
+    genutzt; sonst Fallback auf die Gruppe (non-regressiv). Pause/Resume/Radio
+    adressieren weiterhin die Gruppe — nur Volume geht pro Pod.
+    """
+    if isinstance(pods, (list, tuple)):
+        ids = [e for e in pods if isinstance(e, str) and e]
+        if ids:
+            return ids
+    return [group] if isinstance(group, str) and group else []
+
+
 # --------------------------------------------------------------------------- #
 # Ausführungs-Modus (R2 Debounce / R3 Queue-statt-Race)
 # --------------------------------------------------------------------------- #
@@ -416,7 +476,41 @@ def execution_mode(plan: "ApplyPlan") -> str:
     return EXEC_DEBOUNCE
 
 
-def debounce_decision(plan: "ApplyPlan", window_active: bool) -> tuple[bool, bool]:
+def take_immediate_denon(plan: "ApplyPlan", enabled: bool = True) -> Optional[float]:
+    """Entnimmt dem Plan den harten Denon-Volume-Set zur SOFORT-Ausführung.
+
+    benni_media#13 — Geräte-differenziert, NICHT global:
+
+    - **HomePods** können eine weiche Rampe fahren; die ist ausdrücklich gewollt
+      (sanftes Ein-/Ausblenden, R23-Wake) und bleibt vollständig unangetastet:
+      Rampe UND R2-Debounce gelten für die HomePods unverändert weiter.
+    - **Der Denon** kann technisch keine sinnvolle Rampe abbilden — er bekommt
+      ohnehin einen einzelnen harten `volume_set`. Für ihn ist das Debounce-
+      Fenster reine Verzögerung: in der Evidenz lag das gültige Ziel 27 % um
+      ``22:23:43.872`` an, der AVR stand aber erst ``22:23:49.176`` darauf
+      (**+5.3 s**), obwohl nur EIN Service-Call nötig war.
+
+    Sobald Zielkontext und Zielwert feststehen, geht der Denon-Set deshalb sofort
+    raus. Mutiert den Plan (setzt ``denon_set`` auf None), damit der verbleibende
+    Rest normal gepuffert wird und der Wert nach dem Fenster nicht ein zweites
+    Mal geschrieben wird (AVR-OSD-Flackern). Der Idempotenz-Anker
+    ``ApplyState.applied_denon`` wurde von `decide_apply` bereits fortgeschrieben.
+
+    ``enabled=False`` → altes Verhalten (Denon läuft mit durchs Fenster).
+    """
+    if not enabled:
+        return None
+    value = plan.denon_set
+    plan.denon_set = None
+    return value
+
+
+def debounce_decision(
+    plan: "ApplyPlan",
+    window_active: bool,
+    window_age_s: Optional[float] = None,
+    max_wait_s: Optional[float] = None,
+) -> tuple[bool, bool]:
     """R2/R3 Pending-Buchführung für den EXEC_DEBOUNCE-Fall (pure). Return
     ``(update_pending, restart_window)``.
 
@@ -428,9 +522,24 @@ def debounce_decision(plan: "ApplyPlan", window_active: bool) -> tuple[bool, boo
       stale pause bisher nicht canceln). Fenster NICHT neu anstoßen → Anti-
       Starvation bleibt, latest-wins gilt jetzt auch fürs Zurücknehmen.
     - No-Op-Plan ohne laufendes Fenster → nichts tun.
+
+    benni_media#13 — Anti-Starvation-Deckel: Bisher stieß JEDER Plan mit Arbeit
+    das Fenster neu an. Ein Szenario-Übergang ist aber genau ein Trigger-BURST,
+    jeder Schritt ein neuer Plan mit Arbeit — die Ausführung wurde dadurch immer
+    weiter nach hinten geschoben, statt nach dem Fenster einmal konsolidiert zu
+    laufen. Ist das laufende Fenster älter als ``max_wait_s``, wird weiter
+    gepuffert (latest-wins bleibt), das Fenster aber NICHT mehr verlängert. Ohne
+    ``window_age_s``/``max_wait_s`` (Alt-Aufrufer, Tests) gilt das Verhalten
+    unverändert.
     """
     if plan.has_work:
-        return True, True
+        starved = (
+            window_active
+            and window_age_s is not None
+            and max_wait_s is not None
+            and window_age_s >= max_wait_s
+        )
+        return True, not starved
     if window_active:
         return True, False
     return False, False
@@ -532,12 +641,17 @@ def decide_apply(
     else:
         p.homepods_action = ACTION_NONE
 
+    # benni_media#16 — Volume-Befehle nur an eine spielende bzw. gerade
+    # gestartete HomePods-Gruppe, nie an eine pausierte/idle (das weckt den
+    # AirPlay-Player und ist unhörbar). Gilt für Restore- UND Normalfall.
+    hp_volume_ok = homepods_volume_addressable(p.homepods_action, inp.homepods_state)
+
     # ----- Volume (nur wenn die Policy es erlaubt) -----
     if inp.volume_apply_allowed:
         p.quiet_override = inp.quiet_mode
         if quiet_exit and new_state.pre_quiet_homepods is not None:
             # R20: Quiet-Ende → Restore auf Pre-Quiet (HomePods rampen, Denon hart).
-            if inp.homepods_configured and inp.homepods_state in PLAYER_ADDRESSABLE_VALUES:
+            if inp.homepods_configured and hp_volume_ok:
                 p.homepods_levels = ramp_levels(
                     inp.homepods_volume, new_state.pre_quiet_homepods,
                     settings.ramp_steps, settings.tiny_delta,
@@ -564,7 +678,7 @@ def decide_apply(
             if (
                 inp.homepods_configured
                 and inp.homepods_target is not None
-                and inp.homepods_state in PLAYER_ADDRESSABLE_VALUES
+                and hp_volume_ok
             ):
                 if inp.quiet_mode:
                     # R20: Quiet → hart/direkt (kein Ramp), laufenden Ramp abbrechen.
@@ -585,7 +699,18 @@ def decide_apply(
             # — dann ist das Ist-Volume nicht lesbar (`denon_volume` None), also nur
             # auf echte Ziel-Änderung schreiben (Anker `applied_denon`), sonst würde
             # jeder Watt-Report denselben Pegel neu setzen (Volume-OSD-Flackern).
-            if inp.denon_configured and inp.denon_target is not None:
+            #
+            # benni_media#16 — den Denon NIE auf 0 setzen (mirror alte Logik
+            # `media_orchestrator_volumes_v4`: `dn_target > 0`). Ziel 0.0 heißt
+            # „Denon soll still/aus sein", NICHT `volume_set(0)`: sonst schaltet
+            # apply den frisch per HDMI-CEC eingeschalteten AVR (feste Einschalt-
+            # lautstärke 0.3) im Übergangsfenster stumm, solange der Kontext noch
+            # Musik ist (`denon_target = 0.0`), und muss ihn danach wieder
+            # hochsetzen (belegt 03.08. 23:46: >45 s bei 0). Bei Ziel 0.0 den AVR in
+            # Ruhe lassen — er wird nur auf ein positives Ziel korrigiert. Das
+            # physische Aus läuft über ACTION_DENON_OFF / Nachlauf, nicht über
+            # `volume_set(0)`.
+            if inp.denon_configured and inp.denon_target is not None and inp.denon_target > 0:
                 if inp.denon_state in PLAYER_ADDRESSABLE_VALUES:
                     denon = _direct(inp.denon_volume, inp.denon_target)
                     p.denon_set = denon[0] if denon else None
@@ -692,7 +817,9 @@ def decide_denon_nachlauf(
     denon_on = inp.denon_power_on is True
     # Ein anderer Denon-Konsument hält den geteilten Denon. None (unbekannt) ⇒
     # konservativ wie „aktiv" → kein Off auf Basis fehlender Daten.
-    consumer_active = inp.denon_consumer_active is not False
+    # benni_media#14: über `denon_consumer_holds`, damit ein stale media_device-
+    # Label eines nachweislich AUSGESCHALTETEN Konsumenten den Denon nicht hält.
+    consumer_active = denon_consumer_holds(inp) is not False
 
     # ----- R13: PC-Aus (KANTEN-getriggert, FLEET-80) -----
     # Armen NUR auf der Fallflanke PC an→aus bei laufendem Denon UND ohne anderen
@@ -793,7 +920,8 @@ def decide_private_exit(
     private = inp.private_active is True
     tv_on = _tv_is_off(inp) is False
     denon_on = inp.denon_power_on is True
-    consumer = inp.denon_consumer_active is not False  # None ⇒ konservativ „aktiv"
+    # benni_media#14: stale media_device darf die Exit-Flanke nicht verschlucken.
+    consumer = denon_consumer_holds(inp) is not False  # None ⇒ konservativ „aktiv"
     exit_edge = state.was_private and not private
 
     if private:
@@ -847,6 +975,45 @@ class TvWolPlan:
 
     def as_dict(self) -> dict[str, Any]:
         return {"fire": self.fire, "reasons": list(self.reasons)}
+
+
+def denon_consumer_holds(inp: "Inputs") -> Optional[bool]:
+    """Hält gerade ein ANDERER Konsument den geteilten Denon? (benni_media#14)
+
+    Verschärfung des FLEET-80-Cross-Source-Gates gegen ein *stale* `media_device`.
+    `media_device` ist ein BESCHREIBENDES Label aus media_state und hinkt der
+    Power-Wahrheit um Millisekunden hinterher. Belegte Evidenz (Recorder,
+    2026-07-31, Levtos/benni_media#14):
+
+    - ``01:08:18.845`` ``sensor.benni_master_pc`` → ``off`` (``powered=false``,
+      17 W) — der PC ist eindeutig aus.
+    - ``01:08:25.097`` ``audio_owner`` verlässt ``private_stack`` → Private-Exit-
+      Flanke. ``media_device`` steht hier NOCH auf ``pc``.
+    - ``01:08:25.105`` ``media_device`` wechselt auf ``denon`` (8 ms zu spät).
+
+    Das Gate las in diesem einen Tick „PC ist Denon-Konsument" und verwarf die
+    Exit-Flanke (`no_delay:tv_or_consumer`). Die Flanke kommt nicht wieder → der
+    Denon blieb dauerhaft an (``sensor.benni_master_denon`` blieb ``active``).
+
+    Regel: Steht das Label auf einem Konsumenten, dessen EIGENE, unabhängige
+    Power-Quelle explizit ``aus`` meldet, hält dieser Konsument den Denon NICHT.
+    Damit entscheidet der fachliche Ist-Zustand des Konsumenten und nicht ein
+    nachlaufendes Label. ``None``/unbekannt bleibt konservativ „aktiv" — die
+    FLEET-80-Sicherheitslinie (kein Off auf Basis fehlender Daten) bleibt
+    unangetastet, und Konsumenten ohne eigene Power-Quelle (appletv/ps5/switch)
+    halten den Denon weiterhin.
+    """
+    active = inp.denon_consumer_active
+    if active is not True:
+        return active   # False (kein Konsument) / None (unbekannt) unverändert
+    device = (inp.media_device or "").strip().lower()
+    if device not in DENON_CONSUMER_POWER_CHECKED:
+        return True
+    if device == DEV_LABEL_PC and inp.pc_power_on is False:
+        return False
+    if device == DEV_LABEL_TV and _tv_is_off(inp) is True:
+        return False
+    return True
 
 
 def _tv_is_off(inp: "Inputs") -> Optional[bool]:

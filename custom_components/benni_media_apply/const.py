@@ -89,6 +89,15 @@ SCREEN_DEVICES: Final = ("tv", "appletv")
 # „homepods" (separate Audio-Senke) und „none" zählen bewusst NICHT als Konsument.
 DENON_CONSUMER_DEVICES: Final = ("tv", "appletv", "ps5", "switch", "pc")
 
+# benni_media#14 — Konsumenten, für die media_apply eine EIGENE, autoritative
+# Power-Quelle gebunden hat (PC-/TV-Master bzw. WebOS-State). Nur für diese darf
+# ein explizites „aus" das beschreibende `media_device`-Label überstimmen; alle
+# anderen (appletv/ps5/switch) bleiben konservativ, weil es dafür keine
+# unabhängige Power-Wahrheit gibt.
+DEV_LABEL_PC: Final = "pc"
+DEV_LABEL_TV: Final = "tv"
+DENON_CONSUMER_POWER_CHECKED: Final = (DEV_LABEL_PC, DEV_LABEL_TV)
+
 # Bio-State (core_state), bei dem R14 pausiert (Sleep dominant).
 BIO_SLEEP_VALUE: Final = "sleep"
 # R23 — Wake-Übergang: bio_state-Werte, die als „wach" gelten. Der Eintritt in
@@ -124,6 +133,12 @@ CONF_PLANNED_STATION_PLAYING: Final[str] = "planned_station_playing_entity"  # b
 # nativ in media_state (switch-Entität) — apply verwaltet ihn nicht mehr.
 # Geräte (Apply-Targets):
 CONF_HOMEPODS_PLAYER: Final[str] = "homepods_player_entity"
+# benni_media#16 — Volume geht PRO POD, nicht auf die Gruppe (Lastenheft
+# „pro Gerät einzeln, kein Gruppen-Call"): ein `volume_set` auf die AirPlay-Sync-
+# GRUPPE weckt einen pausierten Verbund wieder auf, auf die einzelnen Pods nicht.
+# Pause/Resume/Radio laufen weiter auf der Gruppe (CONF_HOMEPODS_PLAYER); nur der
+# Volume-Set/Ramp adressiert diese Pod-Liste. Leer/ungebunden ⇒ Fallback Gruppe.
+CONF_HOMEPODS_PODS: Final[str] = "homepods_pod_entities"
 CONF_DENON_PLAYER: Final[str] = "denon_player_entity"
 CONF_SUBWOOFER_SWITCH: Final[str] = "subwoofer_switch_entity"
 
@@ -163,7 +178,11 @@ WATCH_KEYS: Final[tuple[str, ...]] = (
     CONF_MEDIA_DEVICE, CONF_TV_PLAYER, CONF_SLEEP_TV_EXTEND,
     CONF_WAKE_TRIGGERS,
 )
-ENTITY_SLOT_KEYS: Final[tuple[str, ...]] = WATCH_KEYS
+# benni_media#16 — die Pods sind ein Config-Slot, werden aber NICHT beobachtet:
+# der Ramp setzt ihre Lautstärke, und ein State-Watch darauf würde pro Schritt
+# einen Recompute (Selbst-Trigger-Loop) auslösen. Darum nur im Schema, nicht in
+# WATCH_KEYS.
+ENTITY_SLOT_KEYS: Final[tuple[str, ...]] = WATCH_KEYS + (CONF_HOMEPODS_PODS,)
 
 # --------------------------------------------------------------------------- #
 # Profil-Map (Auto-Bind). benni = Live-IDs der Einhornzentrale. Existenz-Filter
@@ -191,6 +210,12 @@ PROFILE_PREFILL: Final[dict[str, dict[str, Any]]] = {
         CONF_MANUAL_PLAYBACK: "binary_sensor.media_manual_playback_active",
         CONF_PLANNED_STATION_PLAYING: "binary_sensor.media_radio_playing_planned_station",
         CONF_HOMEPODS_PLAYER: "media_player.living_homepods_ma_group",
+        # benni_media#16 — die einzelnen AirPlay-Pods der Gruppe (Black defekt/
+        # entfernt → aktuell 2). Volume/Ramp adressiert diese, nicht die Gruppe.
+        CONF_HOMEPODS_PODS: [
+            "media_player.living_homepod_blue_ma_airplay",
+            "media_player.living_homepod_grey_ma_airplay",
+        ],
         CONF_DENON_PLAYER: "media_player.living_denon",
         CONF_SUBWOOFER_SWITCH: "switch.living_subwoofer_plug",
         # Post-FLEET-54: an Core-Devices-Master/core_state gebunden
@@ -235,6 +260,17 @@ CONF_DUCKED_LEVEL: Final[str] = "ducked_level"
 # R2 — Debounce: Szenario-Übergänge warten dieses Fenster, Trigger-Bursts werden
 # zu EINER Aktion konsolidiert. Quiet bricht durch (kein Debounce). 5s kalibrierbar.
 CONF_DEBOUNCE_SECONDS: Final[str] = "debounce_seconds"
+# benni_media#13 — Anti-Starvation-Deckel: jeder Plan mit Arbeit stieß das
+# Debounce-Fenster bisher NEU an. Ein Übergangs-Burst konnte die Ausführung
+# dadurch unbegrenzt vor sich herschieben. Ab diesem Alter des laufenden Fensters
+# wird `latest-wins` weiter gepuffert, das Fenster aber NICHT mehr verlängert.
+CONF_DEBOUNCE_MAX_WAIT: Final[str] = "debounce_max_wait_seconds"
+# benni_media#13 — Der Denon kann technisch KEINE sinnvolle Volume-Rampe fahren
+# (harter Set, sofort hörbar am AVR-OSD). Sein Volume-Set wartet deshalb NICHT
+# auf das R2-Fenster, sondern geht sofort raus, sobald Zielkontext und Zielwert
+# feststehen. Die HomePods-Rampe bleibt davon unberührt (bewusst sanft, 16×1s).
+# Ausschaltbar, falls sich am AVR doch ein Flacker-Effekt zeigt.
+CONF_DENON_IMMEDIATE: Final[str] = "denon_immediate_volume"
 # Service-Delegation für start_radio — Fallback, wenn kein URI auflösbar
 # (Sender ungebunden/unbekannt). Phase 4b portiert den Katalog inline.
 CONF_RADIO_START_SCRIPT: Final[str] = "radio_start_script"
@@ -246,6 +282,8 @@ DEFAULT_RAMP_STEP_DELAY: Final[float] = 1.0
 DEFAULT_TINY_DELTA: Final[float] = 0.02
 DEFAULT_DUCKED_LEVEL: Final[float] = 0.10
 DEFAULT_DEBOUNCE_SECONDS: Final[float] = 5.0
+DEFAULT_DEBOUNCE_MAX_WAIT: Final[float] = 8.0
+DEFAULT_DENON_IMMEDIATE: Final[bool] = True
 DEFAULT_RADIO_START_SCRIPT: Final[str] = "script.media_radio_start"
 DEFAULT_RADIO_PLAY_DELAY: Final[float] = 2.0
 # Automatic radio dispatch protection: a failed provider must not be retriggered
@@ -341,6 +379,8 @@ RAMP_SETTING_DEFAULTS: Final[dict[str, Any]] = {
     CONF_TINY_DELTA: DEFAULT_TINY_DELTA,
     CONF_DUCKED_LEVEL: DEFAULT_DUCKED_LEVEL,
     CONF_DEBOUNCE_SECONDS: DEFAULT_DEBOUNCE_SECONDS,
+    CONF_DEBOUNCE_MAX_WAIT: DEFAULT_DEBOUNCE_MAX_WAIT,
+    CONF_DENON_IMMEDIATE: DEFAULT_DENON_IMMEDIATE,
 }
 
 # --------------------------------------------------------------------------- #

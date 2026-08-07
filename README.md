@@ -3,7 +3,20 @@
 **Ausführungsschicht / Executor** der Benni-Media-Kette. Konsumiert
 `benni_media_state` (Szenario) + `benni_media_policy` (Targets/Action/Gates)
 **nur über HA-Entity-State** und führt sie an den echten Geräten aus — idempotent
-(nur bei Ist≠Soll) und geramped (HomePods 16×1s, Tiny-Delta direkt; Denon hart).
+(nur bei Ist≠Soll). HomePods geramped (16×1s, Tiny-Delta direkt); der Denon
+kann keine Rampe — harter Set, und seit benni_media#13 am R2-Fenster vorbei.
+Der Denon wird nie per `volume_set(0)` stummgeschaltet (nur bei Ziel > 0 gesetzt,
+benni_media#16 — sonst würde der frisch per CEC eingeschaltete AVR im
+Kontext-Übergangsfenster kurz auf 0 gezogen); physisches Aus läuft über die
+Denon-Off-Aktion, nicht über Lautstärke 0.
+Volume-Befehle gehen nur an eine spielende bzw. gerade gestartete HomePod-Gruppe,
+nie an eine pausierte/idle (benni_media#16 — `volume_set` weckt den AirPlay-Player
+und ist dort unhörbar; Pause ist der Stop-Mechanismus, nicht `volume 0`).
+HomePods-Volume/Ramp adressiert die **einzelnen Pods** (`homepods_pod_entities`,
+konfigurierbar), nicht die Gruppe — Lastenheft „pro Gerät einzeln, kein Gruppen-
+Call": ein `volume_set` auf die AirPlay-Sync-Gruppe weckt einen pausierten
+Verbund, auf die Pods nicht. Pause/Resume/Radio bleiben auf der Gruppe. Der Ramp
+ist bidirektional (Ramp-up bei steigendem, Fade-down bei sinkendem Ziel).
 
 Muster: light_policy → scene_presets. Policy denkt, Apply tut.
 
@@ -17,6 +30,14 @@ Shadow stimmt.
 HomePods-Action (pause/play; `start_radio` → delegiert an ein Script),
 Volume mit Ramps, Subwoofer on/off. Restore (R20), Denon-Nachlauf (R13/R14),
 Sleep-TV-Off (R24/R25), Radio-Katalog-Port, TV-WoL, FIFO-Queue folgen.
+
+Radio-Autostart/-Resume startet nie Musik, solange ein **konkurrierender
+Audio-Owner** das Audio besitzt (benni_media#16): `should_autostart_radio` blockt
+bei aktivem TV **und** bei jedem Owner außer `homepods`/`none` (z. B.
+`private_stack`, `tv_denon`). Ein wartender verzögerter Resume wird abgebrochen,
+und unmittelbar vor dem echten Play-Kommando wird der stabile Kontext erneut
+geprüft — robust gegen kurzes TV-Master-Flackern. Owner unbekannt/unbound blockt
+nicht (non-regressiv).
 
 Siehe `FAHRPLAN.md`.
 
