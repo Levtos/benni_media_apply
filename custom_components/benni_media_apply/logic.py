@@ -14,7 +14,7 @@ Restore (R20), Denon-Nachlauf (R13/R14), Sleep-Off (R24/R25) folgen.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any, Final, Optional
 
 from .const import (
@@ -30,6 +30,8 @@ from .const import (
     DEFAULT_DEBOUNCE_SECONDS,
     DEFAULT_DENON_IMMEDIATE,
     DEFAULT_DUCKED_LEVEL,
+    DEFAULT_RADIO_DISPATCH_COOLDOWN,
+    DEFAULT_RADIO_DISPATCH_MAX_BACKOFF,
     DEFAULT_RAMP_STEP_DELAY,
     DEFAULT_RAMP_STEPS,
     DEFAULT_TINY_DELTA,
@@ -143,6 +145,22 @@ class ApplyState:
     applied_denon: Optional[float] = None
 
 
+@dataclass(frozen=True)
+class RadioDispatchState:
+    """In-memory admission/backoff state for automatic radio starts.
+
+    The state intentionally belongs to the executor, not to the media policy:
+    it protects the external dispatch side effect and does not change the
+    policy's desired action. A Home Assistant restart resets it safely.
+    """
+
+    next_allowed_at: float = 0.0
+    consecutive_failures: int = 0
+    last_attempt_at: Optional[float] = None
+    last_source: Optional[str] = None
+    last_error: Optional[str] = None
+
+
 @dataclass
 class ApplyPlan:
     """Was der Coordinator tun soll. Im Shadow (execute=False) nur Debug."""
@@ -235,38 +253,75 @@ def resolve_radio_uri(station: Optional[str]) -> Optional[str]:
     return RADIO_CATALOG.get(station)
 
 
-def screen_blocks_music_start(inp: "Inputs") -> bool:
-    """benni_media#16 — Besitzt gerade ein Bildschirm-Stack (TV) das Audio, sodass
-    kein Musikstart erfolgen darf?
+def radio_dispatch_admit(
+    state: RadioDispatchState,
+    now: float,
+    *,
+    source: str,
+    automatic: bool = True,
+    cooldown_s: float = DEFAULT_RADIO_DISPATCH_COOLDOWN,
+) -> tuple[bool, RadioDispatchState, str]:
+    """Reserve one automatic radio dispatch, or reject it during cooldown.
 
-    Belegter Live-Folgefehler (2026-08-01, TV-Start ~22:17): Der TV-Master
-    flackerte beim Hochfahren extern (active→off→active, Watt-Dip auf 43 W). Im
-    kurzen Falsch-Musik-Fenster endete die manuelle Wiedergabe (`manual_playback`
-    on→off, 22:17:54) und armte den verzögerten Radio-Resume (Trigger B,
-    `RADIO_RESUME_DELAY` 10 s). Als er 22:18:04 feuerte, war der TV längst stabil
-    aktiv (`audio_owner=tv_denon`, `homepods_resume_allowed=off`), aber weder
-    `should_autostart_radio` (TV-blind) noch `action==PAUSE` (Gruppe schon idle →
-    `action=none`) fingen das ab → GAY.FM startete unter laufendem TV und musste
-    erneut pausiert werden.
+    Admission is synchronous/pure so concurrent coordinator tasks cannot both
+    pass the guard before either external service call starts. Manual playback
+    is explicitly outside the guard and does not mutate the state.
+    """
+    if not automatic:
+        return True, state, "manual"
+    now = float(now)
+    if now < state.next_allowed_at:
+        return False, state, "cooldown"
+    delay = max(0.0, float(cooldown_s))
+    return (
+        True,
+        replace(
+            state,
+            next_allowed_at=now + delay,
+            last_attempt_at=now,
+            last_source=source,
+            last_error=None,
+        ),
+        "allowed",
+    )
 
-    Regel: Ist der TV zum Ausführungszeitpunkt an, wird kein (verzögerter)
-    Musikstart ausgelöst. Geprüft wird der STABILE Ist-Zustand (WebOS primär,
-    Watt-Fallback über `_tv_is_off`), nicht ein veraltetes wartendes Startsignal —
-    damit robust gegen den kurzen TV-Master-Flacker. ``None`` (TV unbekannt) blockt
-    NICHT (non-regressiv).
 
-    benni_media#16 — Generalisierung auf den Audio-Owner (nicht nur TV): belegt
-    03.08. 01:28 startete ein verzögerter Radio-Resume (Trigger B, durch die
-    manual-off-Flanke beim Pausieren für private_time gearmt) GAY.FM MITTEN im
-    private_time, weil dieser Guard nur den TV prüfte (TV war aus →
-    ``audio_owner=private_stack``, aber nicht geblockt) → Flap. Jetzt blockt
-    zusätzlich JEDER konkurrierende Owner: alles außer ``homepods``/``none`` (und
-    unbekannt/unbound → non-regressiv). Deckt private_stack, tv_denon und künftige
-    Konsumenten (ps5/pc) ab."""
-    if _tv_is_off(inp) is False:
-        return True
-    owner = (inp.audio_owner or "").strip().lower()
-    return owner not in ("", "unknown", "unavailable", "homepods", "none")
+def radio_dispatch_result(
+    state: RadioDispatchState,
+    now: float,
+    *,
+    success: bool,
+    error: Optional[str] = None,
+    cooldown_s: float = DEFAULT_RADIO_DISPATCH_COOLDOWN,
+    max_backoff_s: float = DEFAULT_RADIO_DISPATCH_MAX_BACKOFF,
+) -> RadioDispatchState:
+    """Record the result and keep a failed provider on exponential backoff."""
+    now = float(now)
+    base = max(0.0, float(cooldown_s))
+    if success:
+        return replace(
+            state,
+            next_allowed_at=max(state.next_allowed_at, now + base),
+            consecutive_failures=0,
+            last_error=None,
+        )
+
+    failures = state.consecutive_failures + 1
+    backoff = min(
+        max(base, float(max_backoff_s)),
+        base * (2 ** max(0, failures - 1)),
+    )
+    return replace(
+        state,
+        next_allowed_at=max(state.next_allowed_at, now + backoff),
+        consecutive_failures=failures,
+        last_error=str(error or "radio_dispatch_failed"),
+    )
+
+
+def radio_dispatch_remaining(state: RadioDispatchState, now: float) -> float:
+    """Return the remaining automatic cooldown in seconds."""
+    return round(max(0.0, state.next_allowed_at - float(now)), 2)
 
 
 def should_autostart_radio(inp: "Inputs") -> bool:
@@ -286,6 +341,23 @@ def should_autostart_radio(inp: "Inputs") -> bool:
         and inp.planned_station_playing is not True
         and not screen_blocks_music_start(inp)
     )
+
+
+def wake_ramp_target(
+    inp: "Inputs", start_volume: float, target: Optional[float]
+) -> Optional[float]:
+    """Hold the wake floor when an eligible radio target transiently becomes 0.
+
+    A valid zero target remains valid outside an automatic-radio wake. During a
+    wake where an automatic start is still eligible, zero is commonly the
+    transient idle target while the external radio provider is failing; ramping
+    down to it would erase the wake floor before the next policy tick converges.
+    """
+    if target is None:
+        return None
+    if target <= 0.0 and should_autostart_radio(inp):
+        return max(0.0, min(1.0, float(start_volume)))
+    return target
 
 
 def media_block_reason(inp: Inputs) -> Optional[str]:
