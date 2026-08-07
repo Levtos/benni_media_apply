@@ -248,6 +248,10 @@ DEFAULT_DUCKED_LEVEL: Final[float] = 0.10
 DEFAULT_DEBOUNCE_SECONDS: Final[float] = 5.0
 DEFAULT_RADIO_START_SCRIPT: Final[str] = "script.media_radio_start"
 DEFAULT_RADIO_PLAY_DELAY: Final[float] = 2.0
+# Automatic radio dispatch protection: a failed provider must not be retriggered
+# by every HomePod state flap. Manual cockpit playback deliberately bypasses it.
+DEFAULT_RADIO_DISPATCH_COOLDOWN: Final[float] = 15.0
+DEFAULT_RADIO_DISPATCH_MAX_BACKOFF: Final[float] = 120.0
 
 # Radio-Katalog (Phase 4b) — Sender-Key → radiobrowser-URI. KOPIE aus dem
 # YAML-Script media_radio_start (Strangler: inline statt Script-Delegation).

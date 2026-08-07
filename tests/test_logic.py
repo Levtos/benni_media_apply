@@ -588,6 +588,73 @@ def test_start_radio_unknown_station_no_uri_falls_back():
     assert p.radio_uri is None
 
 
+def test_automatic_radio_dispatch_reserves_cooldown():
+    state = L.RadioDispatchState()
+    allowed, state, reason = L.radio_dispatch_admit(
+        state, 100.0, source="wake_autostart"
+    )
+    assert allowed is True
+    assert reason == "allowed"
+    assert state.next_allowed_at == 115.0
+
+    allowed, same_state, reason = L.radio_dispatch_admit(
+        state, 100.1, source="policy"
+    )
+    assert allowed is False
+    assert reason == "cooldown"
+    assert same_state == state
+
+
+def test_automatic_radio_dispatch_failure_backs_off_and_success_resets():
+    allowed, state, _ = L.radio_dispatch_admit(
+        L.RadioDispatchState(), 100.0, source="policy"
+    )
+    assert allowed is True
+    state = L.radio_dispatch_result(state, 100.1, success=False, error="503")
+    assert state.consecutive_failures == 1
+    assert state.next_allowed_at == 115.1
+    assert state.last_error == "503"
+
+    allowed, state, _ = L.radio_dispatch_admit(
+        state, 115.2, source="resume"
+    )
+    assert allowed is True
+    state = L.radio_dispatch_result(state, 115.3, success=False, error="503")
+    assert state.consecutive_failures == 2
+    assert state.next_allowed_at == 145.3
+
+    state = L.radio_dispatch_result(state, 145.4, success=True)
+    assert state.consecutive_failures == 0
+    assert state.last_error is None
+    assert state.next_allowed_at == 160.4
+
+
+def test_manual_radio_dispatch_bypasses_automatic_cooldown():
+    state = L.RadioDispatchState(next_allowed_at=200.0, consecutive_failures=3)
+    allowed, same_state, reason = L.radio_dispatch_admit(
+        state, 100.0, source="cockpit", automatic=False
+    )
+    assert allowed is True
+    assert reason == "manual"
+    assert same_state == state
+
+
+def test_wake_ramp_holds_floor_for_transient_zero_radio_target():
+    inp = _inp(
+        radio_ready=True,
+        manual_playback=False,
+        planned_station_playing=False,
+        homepods_state="idle",
+    )
+    assert L.wake_ramp_target(inp, 0.10, 0.0) == 0.10
+    assert L.wake_ramp_target(inp, 0.10, 0.30) == 0.30
+
+
+def test_wake_ramp_keeps_legitimate_zero_target_when_radio_not_eligible():
+    inp = _inp(radio_ready=False, homepods_state="idle")
+    assert L.wake_ramp_target(inp, 0.10, 0.0) == 0.0
+
+
 # ------------------------------------------------- Phase 4c: TV-WoL (R12)
 def _twol(**kw):
     base = dict(media_device=None, tv_player_state=None, tv_power_on=None)

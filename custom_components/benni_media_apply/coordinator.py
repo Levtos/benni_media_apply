@@ -111,6 +111,7 @@ from .const import (
     EXEC_IMMEDIATE,
     EXEC_SHADOW,
     PLAYER_OFF_VALUES,
+    PLAYER_PLAYING_VALUES,
     RADIO_ENQUEUE,
     RADIO_MEDIA_TYPE,
     SCREEN_DEVICES,
@@ -162,6 +163,8 @@ class MediaApplyCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self._last_wake_states: dict[str, bool] = {}
         self._last_bio_state: str | None = None
         self._radio_resume_task: Optional[asyncio.Task] = None
+        self._radio_play_after_task: Optional[asyncio.Task] = None
+        self._radio_dispatch_state = logic.RadioDispatchState()
         self._last_manual_playback: bool | None = None
         self._nachlauf_tasks: dict[str, asyncio.Task] = {}
         self._last_debug: dict[str, Any] = {}
@@ -256,6 +259,7 @@ class MediaApplyCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self._cancel_sleep_tv()
         self._cancel_wake()
         self._cancel_radio_resume()
+        self._cancel_radio_play_after()
         for key in list(self._nachlauf_tasks):
             self._cancel_nachlauf(key)
 
@@ -727,6 +731,7 @@ class MediaApplyCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 "manual_playback": inp.manual_playback,
                 "planned_station_playing": inp.planned_station_playing,
                 "resume_pending": self._radio_resume_task is not None and not self._radio_resume_task.done(),
+                "automatic_dispatch": self._radio_dispatch_status(),
             },
             # FLEET-44/98: private_time-Latch lebt jetzt nativ in media_state.
             "bindings": self.bindings(),
@@ -770,22 +775,7 @@ class MediaApplyCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             elif plan.homepods_action == ACTION_RESUME:
                 await self._svc("media_player", "media_play", {"entity_id": hp})
             elif plan.homepods_action == ACTION_START_RADIO:
-                if plan.radio_uri:
-                    # Inline-Port (Phase 4b): play_media → kurze Pause → media_play,
-                    # wie das YAML-Script. Idempotenz-Gate (nicht schon playing) hat
-                    # die Pure-Logic bereits geprüft.
-                    await self._svc(
-                        "music_assistant", "play_media",
-                        {
-                            "entity_id": hp, "media_id": plan.radio_uri,
-                            "media_type": RADIO_MEDIA_TYPE, "enqueue": RADIO_ENQUEUE,
-                        },
-                    )
-                    self.hass.async_create_task(self._radio_play_after(hp))
-                else:
-                    # Fallback: Sender ungebunden/unbekannt → YAML-Script delegieren.
-                    radio = self._opts.get(CONF_RADIO_START_SCRIPT, DEFAULT_RADIO_START_SCRIPT)
-                    await self._svc("script", "turn_on", {"entity_id": radio})
+                await self._dispatch_automatic_radio(plan.radio_uri, source="policy")
 
         # ----- HomePods-Volume (Ramp oder direkt) -----
         if plan.homepods_levels and hp:
@@ -852,15 +842,43 @@ class MediaApplyCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         finally:
             self._set_ramp_active(False)
 
-    async def _radio_play_after(self, entity_id: str) -> None:
-        """play_media füllt nur die Queue; nach kurzer Pause media_play (wie das
-        YAML-Script). Geräte-Fehler dürfen Apply nicht crashen."""
+    async def _radio_play_after(self, entity_id: str, *, automatic: bool = False) -> None:
+        """play_media füllt nur die Queue; danach folgt media_play.
+
+        Automatic calls are re-checked and counted by the same circuit breaker;
+        manual cockpit calls keep the historical best-effort behavior.
+        """
         delay = self._duration(CONF_RADIO_PLAY_DELAY, DEFAULT_RADIO_PLAY_DELAY)
         try:
             await asyncio.sleep(max(0.0, delay))
         except asyncio.CancelledError:
             raise
-        await self._svc("media_player", "media_play", {"entity_id": entity_id})
+        try:
+            if automatic:
+                inp = self._build_inputs()
+                if (
+                    inp.stop_latch
+                    or inp.manual_playback is True
+                    or self._state(CONF_HOMEPODS_PLAYER) in PLAYER_PLAYING_VALUES
+                ):
+                    return
+                await self.hass.services.async_call(
+                    "media_player", "media_play", {"entity_id": entity_id}, blocking=True
+                )
+                self._radio_dispatch_result(success=True)
+            else:
+                await self._svc("media_player", "media_play", {"entity_id": entity_id})
+        except asyncio.CancelledError:
+            raise
+        except Exception as err:  # noqa: BLE001 — device failure is recorded, not fatal.
+            if automatic:
+                self._radio_dispatch_result(success=False, error=err)
+                _LOGGER.warning("media_apply: automatic radio media_play failed: %s", err)
+            else:
+                _LOGGER.warning("media_apply: radio media_play failed: %s", err)
+        finally:
+            if automatic and self._radio_play_after_task is asyncio.current_task():
+                self._radio_play_after_task = None
 
     # ----- Radio-Autostart (FLEET-79) -----
     def _manual_off_edge(self) -> bool:
@@ -887,12 +905,7 @@ class MediaApplyCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         if not logic.should_autostart_radio(self._build_inputs()):
             return
         uri = logic.resolve_radio_uri(self._state(CONF_RADIO_STATION))
-        if uri:
-            await self.async_play_radio(uri)
-        else:  # Sender ungebunden/unbekannt → Script-Fallback
-            radio = self._opts.get(CONF_RADIO_START_SCRIPT, DEFAULT_RADIO_START_SCRIPT)
-            await self._svc("script", "turn_on", {"entity_id": radio})
-        _LOGGER.info("media_apply: FLEET-79 Radio-Autostart (wake) → %s", uri or "script")
+        await self._dispatch_automatic_radio(uri, source="wake_autostart")
 
     @callback
     def _schedule_radio_resume(self) -> None:
@@ -904,6 +917,111 @@ class MediaApplyCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         if self._radio_resume_task is not None and not self._radio_resume_task.done():
             self._radio_resume_task.cancel()
         self._radio_resume_task = None
+
+    @callback
+    def _cancel_radio_play_after(self) -> None:
+        if self._radio_play_after_task is not None and not self._radio_play_after_task.done():
+            self._radio_play_after_task.cancel()
+        self._radio_play_after_task = None
+
+    @callback
+    def _radio_dispatch_admit(self, source: str) -> bool:
+        allowed, state, reason = logic.radio_dispatch_admit(
+            self._radio_dispatch_state,
+            self.hass.loop.time(),
+            source=source,
+        )
+        if not allowed:
+            _LOGGER.debug(
+                "media_apply: automatic radio dispatch suppressed (%s), %.2fs remaining",
+                source,
+                logic.radio_dispatch_remaining(state, self.hass.loop.time()),
+            )
+            return False
+        self._radio_dispatch_state = state
+        self.async_update_listeners()
+        return True
+
+    @callback
+    def _radio_dispatch_result(self, *, success: bool, error: Exception | None = None) -> None:
+        self._radio_dispatch_state = logic.radio_dispatch_result(
+            self._radio_dispatch_state,
+            self.hass.loop.time(),
+            success=success,
+            error=str(error) if error else None,
+        )
+        self.async_update_listeners()
+
+    def _radio_dispatch_status(self) -> dict[str, Any]:
+        state = self._radio_dispatch_state
+        return {
+            "cooldown_s": logic.radio_dispatch_remaining(state, self.hass.loop.time()),
+            "failure_count": state.consecutive_failures,
+            "last_source": state.last_source,
+            "last_error": state.last_error,
+            "play_after_pending": (
+                self._radio_play_after_task is not None
+                and not self._radio_play_after_task.done()
+            ),
+        }
+
+    def _schedule_radio_play_after(self, entity_id: str, *, automatic: bool) -> None:
+        if automatic:
+            self._cancel_radio_play_after()
+            self._radio_play_after_task = self.hass.async_create_task(
+                self._radio_play_after(entity_id, automatic=True)
+            )
+            return
+        self.hass.async_create_task(self._radio_play_after(entity_id))
+
+    async def _dispatch_automatic_radio(self, media_id: str | None, *, source: str) -> bool:
+        """Dispatch one automatic radio start through the shared circuit breaker."""
+        hp = self._entity_id(CONF_HOMEPODS_PLAYER)
+        if not hp:
+            return False
+        inp = self._build_inputs()
+        if (
+            inp.stop_latch
+            or inp.radio_ready is False
+            or inp.manual_playback is True
+            or logic.media_block_reason(inp) is not None
+            or self._state(CONF_HOMEPODS_PLAYER) in PLAYER_PLAYING_VALUES
+        ):
+            return False
+        if not self._radio_dispatch_admit(source):
+            return False
+        try:
+            if media_id:
+                await self.hass.services.async_call(
+                    "music_assistant",
+                    "play_media",
+                    {
+                        "entity_id": hp,
+                        "media_id": media_id,
+                        "media_type": RADIO_MEDIA_TYPE,
+                        "enqueue": RADIO_ENQUEUE,
+                    },
+                    blocking=True,
+                )
+                self._schedule_radio_play_after(hp, automatic=True)
+            else:
+                radio = self._opts.get(CONF_RADIO_START_SCRIPT, DEFAULT_RADIO_START_SCRIPT)
+                await self.hass.services.async_call(
+                    "script", "turn_on", {"entity_id": radio}, blocking=True
+                )
+            self._radio_dispatch_result(success=True)
+            _LOGGER.info(
+                "media_apply: automatic radio dispatch (%s) → %s",
+                source,
+                media_id or "script",
+            )
+            return True
+        except asyncio.CancelledError:
+            raise
+        except Exception as err:  # noqa: BLE001 — provider failure is circuit-breaker input.
+            self._radio_dispatch_result(success=False, error=err)
+            _LOGGER.warning("media_apply: automatic radio dispatch (%s) failed: %s", source, err)
+            return False
 
     async def _run_radio_resume(self) -> None:
         """Trigger B: nach Delay die geplante Station fortsetzen — re-prüft die
@@ -921,9 +1039,7 @@ class MediaApplyCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         if latch_on or not logic.should_autostart_radio(inp) or inp.action == ACTION_PAUSE:
             return
         uri = logic.resolve_radio_uri(inp.radio_station)
-        if uri:
-            await self.async_play_radio(uri)
-            _LOGGER.info("media_apply: FLEET-79 Radio-Resume (post-manual) → %s", uri)
+        await self._dispatch_automatic_radio(uri, source="resume")
 
     async def _execute_tv_wol(self) -> None:
         """R12: TV einschalten. `media_player.turn_on` löst das webOS-„Leuchtfeuer"
@@ -999,16 +1115,23 @@ class MediaApplyCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             await asyncio.sleep(max(0.0, s.wake_debounce_seconds))
             if logic.media_block_reason(self._build_inputs()):
                 return
+            wake_inputs = self._build_inputs()
             target = self._float(CONF_VOL_TARGET_HOMEPODS)
             if target is None:
                 return
-            levels = logic.ramp_levels(start, target, s.ramp_steps, s.tiny_delta)
+            effective_target = logic.wake_ramp_target(wake_inputs, start, target)
+            levels = logic.ramp_levels(start, effective_target, s.ramp_steps, s.tiny_delta)
             if levels:
                 self._cancel_ramp()
                 self._ramp_task = self.hass.async_create_task(
                     self._run_ramp(hp, levels, s.ramp_step_delay_s)
                 )
-            _LOGGER.info("media_apply: R23 Wake-Sequenz %s → %.2f → Ramp auf %.2f", hp, start, target)
+            _LOGGER.info(
+                "media_apply: R23 Wake-Sequenz %s → %.2f → Ramp auf %.2f",
+                hp,
+                start,
+                effective_target,
+            )
         except asyncio.CancelledError:
             raise
         finally:
@@ -1210,7 +1333,7 @@ class MediaApplyCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 "media_type": RADIO_MEDIA_TYPE, "enqueue": RADIO_ENQUEUE,
             },
         )
-        self.hass.async_create_task(self._radio_play_after(hp))
+        self._schedule_radio_play_after(hp, automatic=False)
         return {"played": media_id, "target": hp}
 
     async def async_search_radio(self, query: str, limit: int | None = None) -> list[dict[str, Any]]:
