@@ -39,6 +39,30 @@ und unmittelbar vor dem echten Play-Kommando wird der stabile Kontext erneut
 geprüft — robust gegen kurzes TV-Master-Flackern. Owner unbekannt/unbound blockt
 nicht (non-regressiv).
 
+## Wake-Playback-Recovery (#41)
+
+Ein Wake-Start ist **single-flight**: `music_assistant.play_media` mit
+`enqueue=replace` ist der einzige Start-Owner. Parallele Policy-Resumes und der
+frühere verzögerte `media_player.media_play`-Impuls werden während der
+Wake-Episode unterdrückt. Nach dem Start werden die einzelnen Pods explizit
+entstummt.
+
+Die Recovery erkennt den beobachteten AirPlay-Hänger über HA-Signale:
+Gruppe/Pod nicht stabil `playing`, Pod `unavailable` oder
+`is_volume_muted=true` bei positivem Ziel. Akustische Stille trotz vollständig
+gesunder Player-States kann Home Assistant nicht beweisen.
+
+- nach standardmäßig 60 s: einmal Soft-Recovery (vollständiger Stream-Replace +
+  Unmute),
+- frühestens nach 300 s: optional genau ein Music-Assistant-Neustart,
+- danach 60 s warten, einmal Stream-Replace + Unmute,
+- mindestens 30 min Neustart-Cooldown; kein periodischer Neustart-Loop.
+
+Der harte Pfad ist standardmäßig aus und erfordert eine explizite
+`music_assistant_app_id`. Alle verzögerten Schritte prüfen Stop-Latch, Sleep,
+Policy-Gates, Präsenz, Audio-Owner, manuelle Wiedergabe und positives Ziel neu.
+Status und Recovery-Stufe stehen als Sensoren und im WebSocket-Status bereit.
+
 Siehe `FAHRPLAN.md`.
 
 ## Verifikation

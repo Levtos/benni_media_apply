@@ -223,6 +223,106 @@ def test_execute_true_when_apply_enabled():
     assert p.execute is True
 
 
+# -------------------------------------------- Wake playback single-flight / #41
+def _recovery_inp(**kw):
+    base = dict(
+        apply_enabled=True,
+        homepods_resume_allowed=True,
+        homepods_target=0.4,
+        radio_ready=True,
+        manual_playback=False,
+        bio_sleep=False,
+        away_gate=False,
+        presence_state="anwesend",
+        audio_owner="homepods",
+    )
+    base.update(kw)
+    return _inp(**base)
+
+
+def test_wake_single_flight_suppresses_resume_but_keeps_volume():
+    plan = L.ApplyPlan(
+        execute=True,
+        homepods_action=C.ACTION_RESUME,
+        homepods_levels=[0.1, 0.2],
+    )
+    out = L.suppress_parallel_wake_start(plan, True)
+    assert out.homepods_action == C.ACTION_NONE
+    assert out.homepods_levels == [0.1, 0.2]
+    assert "wake:single_flight_owner" in out.reasons
+
+
+def test_wake_single_flight_does_not_suppress_pause():
+    plan = L.ApplyPlan(execute=True, homepods_action=C.ACTION_PAUSE)
+    assert L.suppress_parallel_wake_start(plan, True).homepods_action == C.ACTION_PAUSE
+
+
+def test_playback_recovery_gate_allows_valid_wake():
+    assert L.playback_recovery_block_reason(_recovery_inp()) is None
+
+
+def test_playback_recovery_gate_cancels_sleep_stop_and_manual():
+    assert L.playback_recovery_block_reason(_recovery_inp(bio_sleep=True)) == "bio_sleep"
+    assert L.playback_recovery_block_reason(_recovery_inp(stop_latch=True)) == "stop_latch"
+    assert (
+        L.playback_recovery_block_reason(_recovery_inp(manual_playback=True))
+        == "manual_playback"
+    )
+
+
+def test_playback_recovery_gate_cancels_competing_owner_and_zero_target():
+    assert (
+        L.playback_recovery_block_reason(_recovery_inp(audio_owner="tv_denon"))
+        == "competing_audio_owner"
+    )
+    assert (
+        L.playback_recovery_block_reason(_recovery_inp(homepods_target=0.0))
+        == "non_positive_target"
+    )
+    assert (
+        L.playback_recovery_block_reason(
+            _recovery_inp(homepods_target=0.0), require_positive_target=False
+        )
+        is None
+    )
+
+
+def test_playback_health_detects_muted_pod():
+    health = L.playback_health(
+        group_state="playing",
+        pod_states=["playing", "playing"],
+        pod_muted=[False, True],
+        target=0.4,
+    )
+    assert health.state == "unhealthy"
+    assert health.reason == "pod_2_muted"
+
+
+def test_playback_health_detects_group_and_member_flap():
+    assert L.playback_health(
+        group_state="idle",
+        pod_states=["playing", "playing"],
+        pod_muted=[False, False],
+        target=0.4,
+    ).reason == "group_idle"
+    assert L.playback_health(
+        group_state="playing",
+        pod_states=["idle", "playing"],
+        pod_muted=[False, False],
+        target=0.4,
+    ).reason == "pod_1_idle"
+
+
+def test_playback_health_is_healthy_only_for_stable_unmuted_players():
+    health = L.playback_health(
+        group_state="playing",
+        pod_states=["playing", "playing"],
+        pod_muted=[False, False],
+        target=0.4,
+    )
+    assert health == L.PlaybackHealth("healthy")
+
+
 # ------------------------------------------------- R20 Quiet-Snapshot / Restore
 def test_r20_quiet_entry_snapshots_pre_quiet_target():
     # tick1: normal → last_homepods_target = 0.45 gemerkt.
