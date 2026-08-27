@@ -161,6 +161,19 @@ class RadioDispatchState:
     last_error: Optional[str] = None
 
 
+@dataclass(frozen=True)
+class PlaybackHealth:
+    """Observable health of the wake playback path.
+
+    This deliberately evaluates only signals Home Assistant can prove. It can
+    detect a non-playing group, a non-playing/unavailable member and an explicit
+    mute flag. It cannot prove acoustic output when every player reports healthy.
+    """
+
+    state: str
+    reason: Optional[str] = None
+
+
 @dataclass
 class ApplyPlan:
     """Was der Coordinator tun soll. Im Shadow (execute=False) nur Debug."""
@@ -374,6 +387,79 @@ def should_autostart_radio(inp: "Inputs") -> bool:
         and inp.manual_playback is not True
         and inp.planned_station_playing is not True
         and not screen_blocks_music_start(inp)
+    )
+
+
+def playback_recovery_block_reason(
+    inp: "Inputs", *, require_positive_target: bool = True
+) -> Optional[str]:
+    """Return why a delayed wake recovery must stop before touching playback.
+
+    Every delayed stage reuses this pure gate. That prevents a soft retry or an
+    app restart after the user went back to sleep, pressed Stop, started manual
+    playback or handed audio ownership to a screen/private stack.
+    """
+    if not inp.apply_enabled:
+        return "apply_disabled"
+    blocked = media_block_reason(inp)
+    if blocked:
+        return blocked
+    if presence_holds(inp):
+        return "presence_unknown"
+    if inp.bio_sleep is True:
+        return "bio_sleep"
+    if inp.stop_latch:
+        return "stop_latch"
+    if inp.action == ACTION_PAUSE:
+        return "policy_pause"
+    if not inp.homepods_resume_allowed:
+        return "resume_not_allowed"
+    if inp.suppress_homepods_start:
+        return "start_suppressed"
+    if inp.radio_ready is not True:
+        return "radio_not_ready"
+    if inp.manual_playback is True:
+        return "manual_playback"
+    if screen_blocks_music_start(inp):
+        return "competing_audio_owner"
+    if require_positive_target and (
+        inp.homepods_target is None or inp.homepods_target <= 0.0
+    ):
+        return "non_positive_target"
+    return None
+
+
+def playback_health(
+    *,
+    group_state: Optional[str],
+    pod_states: list[Optional[str]],
+    pod_muted: list[Optional[bool]],
+    target: Optional[float],
+) -> PlaybackHealth:
+    """Classify the signals that identify the observed AirPlay hang (#41)."""
+    if target is None or target <= 0.0:
+        return PlaybackHealth("inactive", "non_positive_target")
+    if group_state not in PLAYER_PLAYING_VALUES:
+        return PlaybackHealth("unhealthy", f"group_{group_state or 'unavailable'}")
+    for index, state in enumerate(pod_states):
+        if state not in PLAYER_PLAYING_VALUES:
+            return PlaybackHealth(
+                "unhealthy", f"pod_{index + 1}_{state or 'unavailable'}"
+            )
+    for index, muted in enumerate(pod_muted):
+        if muted is True:
+            return PlaybackHealth("unhealthy", f"pod_{index + 1}_muted")
+    return PlaybackHealth("healthy")
+
+
+def suppress_parallel_wake_start(plan: "ApplyPlan", wake_owned: bool) -> "ApplyPlan":
+    """Keep volume work but remove competing start commands during a wake episode."""
+    if not wake_owned or plan.homepods_action not in (ACTION_RESUME, ACTION_START_RADIO):
+        return plan
+    return replace(
+        plan,
+        homepods_action=ACTION_NONE,
+        reasons=[*plan.reasons, "wake:single_flight_owner"],
     )
 
 

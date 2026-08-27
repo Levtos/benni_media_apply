@@ -274,7 +274,9 @@ CONF_DENON_IMMEDIATE: Final[str] = "denon_immediate_volume"
 # Service-Delegation für start_radio — Fallback, wenn kein URI auflösbar
 # (Sender ungebunden/unbekannt). Phase 4b portiert den Katalog inline.
 CONF_RADIO_START_SCRIPT: Final[str] = "radio_start_script"
-# Verzögerung zwischen play_media und media_play (Sekunden), wie im YAML-Script.
+# Legacy-Option aus <= 0.19.4. Music Assistants play_media startet die Wiedergabe
+# selbst; der nachgelagerte media_play-Pfad wurde in 0.19.5 entfernt. Der Key
+# bleibt nur erhalten, damit bestehende Config-Entries ohne Migration lesbar sind.
 CONF_RADIO_PLAY_DELAY: Final[str] = "radio_play_delay_seconds"
 
 DEFAULT_RAMP_STEPS: Final[int] = 16
@@ -312,6 +314,29 @@ CONF_RADIO_AUTOSTART: Final[str] = "radio_autostart_enabled"
 CONF_RADIO_RESUME_DELAY: Final[str] = "radio_resume_delay_seconds"
 DEFAULT_RADIO_AUTOSTART: Final[bool] = True
 DEFAULT_RADIO_RESUME_DELAY: Final[float] = 10.0
+
+# Wake-Playback-Recovery (#41). Ein Wake-Start ist single-flight; nach dem
+# initialen Music-Assistant-Start prüft der Coordinator Gruppe + einzelne Pods.
+# Soft-Recovery ist standardmäßig aktiv. Ein Add-on/App-Neustart ist bewusst
+# opt-in und braucht eine explizite App-ID — kein privater Slug im Public Repo.
+CONF_PLAYBACK_RECOVERY: Final[str] = "playback_recovery_enabled"
+CONF_PLAYBACK_RECOVERY_SETTLE: Final[str] = "playback_recovery_settle_seconds"
+CONF_PLAYBACK_RECOVERY_HARD_AFTER: Final[str] = "playback_recovery_hard_after_seconds"
+CONF_PLAYBACK_HARD_RECOVERY: Final[str] = "playback_hard_recovery_enabled"
+CONF_MUSIC_ASSISTANT_APP_ID: Final[str] = "music_assistant_app_id"
+CONF_MUSIC_ASSISTANT_RESTART_WAIT: Final[str] = "music_assistant_restart_wait_seconds"
+CONF_MUSIC_ASSISTANT_RESTART_COOLDOWN: Final[str] = "music_assistant_restart_cooldown_seconds"
+
+DEFAULT_PLAYBACK_RECOVERY: Final[bool] = True
+DEFAULT_PLAYBACK_RECOVERY_SETTLE: Final[float] = 60.0
+DEFAULT_PLAYBACK_RECOVERY_HARD_AFTER: Final[float] = 300.0
+DEFAULT_PLAYBACK_RECOVERY_RECHECK: Final[float] = 30.0
+DEFAULT_PLAYBACK_HEALTH_SAMPLES: Final[int] = 3
+DEFAULT_PLAYBACK_HEALTH_SAMPLE_INTERVAL: Final[float] = 5.0
+DEFAULT_PLAYBACK_HARD_RECOVERY: Final[bool] = False
+DEFAULT_MUSIC_ASSISTANT_APP_ID: Final[str] = ""
+DEFAULT_MUSIC_ASSISTANT_RESTART_WAIT: Final[float] = 60.0
+DEFAULT_MUSIC_ASSISTANT_RESTART_COOLDOWN: Final[float] = 1800.0
 
 # Anzeige-Namen der Default-Sender (für Shortcuts im Cockpit). Kopie aus
 # sensor.media_radio_plan (station_name). Keys = RADIO_CATALOG-Keys.
@@ -394,6 +419,8 @@ UID_RAMP_ACTIVE: Final[str] = "ramp_active"
 UID_APPLY_ENABLED: Final[str] = "apply_enabled"
 UID_EXECUTE: Final[str] = "execute"
 UID_NACHLAUF_ACTIVE: Final[str] = "denon_nachlauf_active"
+UID_PLAYBACK_HEALTH: Final[str] = "playback_health"
+UID_PLAYBACK_RECOVERY_STAGE: Final[str] = "playback_recovery_stage"
 
 DEFAULT_DATA: Final[dict[str, Any]] = {
     "last_action": ACTION_NONE,
@@ -403,4 +430,6 @@ DEFAULT_DATA: Final[dict[str, Any]] = {
     "apply_enabled": DEFAULT_APPLY_ENABLED,
     "execute": False,
     "denon_nachlauf_active": False,
+    "playback_health": "idle",
+    "playback_recovery_stage": "idle",
 }

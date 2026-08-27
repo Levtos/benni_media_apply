@@ -27,9 +27,15 @@ from .const import (
     CONF_DUCKED_LEVEL,
     CONF_HOMEPODS_PLAYER,
     CONF_HOMEPODS_PODS,
+    CONF_MUSIC_ASSISTANT_APP_ID,
+    CONF_MUSIC_ASSISTANT_RESTART_COOLDOWN,
+    CONF_MUSIC_ASSISTANT_RESTART_WAIT,
+    CONF_PLAYBACK_HARD_RECOVERY,
+    CONF_PLAYBACK_RECOVERY,
+    CONF_PLAYBACK_RECOVERY_HARD_AFTER,
+    CONF_PLAYBACK_RECOVERY_SETTLE,
     CONF_PROFILE,
     CONF_RADIO_AUTOSTART,
-    CONF_RADIO_PLAY_DELAY,
     CONF_RADIO_RESUME_DELAY,
     CONF_RADIO_START_SCRIPT,
     CONF_RAMP_STEP_DELAY,
@@ -51,9 +57,15 @@ from .const import (
     DEFAULT_DENON_NACHLAUF_TV,
     DEFAULT_PRIVATE_EXIT_DELAY,
     DEFAULT_DUCKED_LEVEL,
+    DEFAULT_MUSIC_ASSISTANT_APP_ID,
+    DEFAULT_MUSIC_ASSISTANT_RESTART_COOLDOWN,
+    DEFAULT_MUSIC_ASSISTANT_RESTART_WAIT,
+    DEFAULT_PLAYBACK_HARD_RECOVERY,
+    DEFAULT_PLAYBACK_RECOVERY,
+    DEFAULT_PLAYBACK_RECOVERY_HARD_AFTER,
+    DEFAULT_PLAYBACK_RECOVERY_SETTLE,
     DEFAULT_PROFILE,
     DEFAULT_RADIO_AUTOSTART,
-    DEFAULT_RADIO_PLAY_DELAY,
     DEFAULT_RADIO_RESUME_DELAY,
     DEFAULT_RADIO_START_SCRIPT,
     DEFAULT_SLEEP_TV_NOTIFY,
@@ -125,10 +137,25 @@ _RAMP_FIELDS: dict[str, tuple[Any, Any]] = {
     CONF_DENON_NACHLAUF_TV: (DEFAULT_DENON_NACHLAUF_TV, vol.All(vol.Coerce(float), vol.Range(min=0.0, max=600.0))),
     # control#3 — Private-Exit-Denon-Off-Delay (separat vom 90 s-Nachlauf).
     CONF_PRIVATE_EXIT_DELAY: (DEFAULT_PRIVATE_EXIT_DELAY, vol.All(vol.Coerce(float), vol.Range(min=0.0, max=120.0))),
-    # Phase 4b — Radio: Pause zwischen play_media und media_play.
-    CONF_RADIO_PLAY_DELAY: (DEFAULT_RADIO_PLAY_DELAY, vol.All(vol.Coerce(float), vol.Range(min=0.0, max=15.0))),
     # FLEET-79 — Radio-Autostart: Resume-Delay nach manueller Wiedergabe.
     CONF_RADIO_RESUME_DELAY: (DEFAULT_RADIO_RESUME_DELAY, vol.All(vol.Coerce(float), vol.Range(min=0.0, max=120.0))),
+    # #41 — gestufte Wake-Playback-Recovery.
+    CONF_PLAYBACK_RECOVERY_SETTLE: (
+        DEFAULT_PLAYBACK_RECOVERY_SETTLE,
+        vol.All(vol.Coerce(float), vol.Range(min=15.0, max=300.0)),
+    ),
+    CONF_PLAYBACK_RECOVERY_HARD_AFTER: (
+        DEFAULT_PLAYBACK_RECOVERY_HARD_AFTER,
+        vol.All(vol.Coerce(float), vol.Range(min=60.0, max=900.0)),
+    ),
+    CONF_MUSIC_ASSISTANT_RESTART_WAIT: (
+        DEFAULT_MUSIC_ASSISTANT_RESTART_WAIT,
+        vol.All(vol.Coerce(float), vol.Range(min=15.0, max=300.0)),
+    ),
+    CONF_MUSIC_ASSISTANT_RESTART_COOLDOWN: (
+        DEFAULT_MUSIC_ASSISTANT_RESTART_COOLDOWN,
+        vol.All(vol.Coerce(float), vol.Range(min=300.0, max=21600.0)),
+    ),
     # Phase 3b — Sleep-TV-Off (R24), Sekunden.
     CONF_SLEEP_TV_OFF_DELAY: (DEFAULT_SLEEP_TV_OFF_DELAY, vol.All(vol.Coerce(float), vol.Range(min=0.0, max=21600.0))),
     CONF_SLEEP_TV_WARN_LEAD: (DEFAULT_SLEEP_TV_WARN_LEAD, vol.All(vol.Coerce(float), vol.Range(min=0.0, max=600.0))),
@@ -157,11 +184,27 @@ def _options_schema(defaults: dict[str, Any]) -> vol.Schema:
             CONF_RADIO_AUTOSTART,
             default=bool(defaults.get(CONF_RADIO_AUTOSTART, DEFAULT_RADIO_AUTOSTART)),
         ): _BOOL,
+        vol.Optional(
+            CONF_PLAYBACK_RECOVERY,
+            default=bool(defaults.get(CONF_PLAYBACK_RECOVERY, DEFAULT_PLAYBACK_RECOVERY)),
+        ): _BOOL,
+        vol.Optional(
+            CONF_PLAYBACK_HARD_RECOVERY,
+            default=bool(
+                defaults.get(CONF_PLAYBACK_HARD_RECOVERY, DEFAULT_PLAYBACK_HARD_RECOVERY)
+            ),
+        ): _BOOL,
     }
     for key, (default, coerce) in _RAMP_FIELDS.items():
         fields[vol.Optional(key, default=defaults.get(key, default))] = coerce
     radio_default = defaults.get(CONF_RADIO_START_SCRIPT, DEFAULT_RADIO_START_SCRIPT)
     fields[vol.Optional(CONF_RADIO_START_SCRIPT, default=radio_default)] = _SCRIPT
+    app_id_default = defaults.get(
+        CONF_MUSIC_ASSISTANT_APP_ID, DEFAULT_MUSIC_ASSISTANT_APP_ID
+    )
+    fields[vol.Optional(CONF_MUSIC_ASSISTANT_APP_ID, default=app_id_default)] = (
+        selector.TextSelector(selector.TextSelectorConfig())
+    )
     # R12 — TV-WoL: variable MAC (leer = nur turn_on / webOS-Leuchtfeuer).
     mac_default = defaults.get(CONF_TV_WOL_MAC, DEFAULT_TV_WOL_MAC)
     fields[vol.Optional(CONF_TV_WOL_MAC, default=mac_default)] = selector.TextSelector(

@@ -23,6 +23,8 @@ from .const import (
     UID_HOMEPODS_TARGET,
     UID_LAST_ACTION,
     UID_NACHLAUF_ACTIVE,
+    UID_PLAYBACK_HEALTH,
+    UID_PLAYBACK_RECOVERY_STAGE,
     UID_RAMP_ACTIVE,
     unique_id,
 )
@@ -42,6 +44,15 @@ SENSORS: tuple[FieldDesc, ...] = (
     FieldDesc("last_action", UID_LAST_ACTION, "Last Action", "mdi:play-pause"),
     FieldDesc("homepods_target", UID_HOMEPODS_TARGET, "HomePods Target", "mdi:speaker", "%"),
     FieldDesc("denon_target", UID_DENON_TARGET, "Denon Target", "mdi:audio-video", "%"),
+    FieldDesc(
+        "playback_health", UID_PLAYBACK_HEALTH, "Playback Health", "mdi:heart-pulse"
+    ),
+    FieldDesc(
+        "playback_recovery_stage",
+        UID_PLAYBACK_RECOVERY_STAGE,
+        "Playback Recovery Stage",
+        "mdi:restore-alert",
+    ),
 )
 
 BINARY_SENSORS: tuple[FieldDesc, ...] = (
