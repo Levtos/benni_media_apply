@@ -51,6 +51,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         _LOGGER.info("Migrated benni_media_apply entity bindings during setup")
 
     coord = MediaApplyCoordinator(hass, entry)
+    await coord.async_load_stored()
     await coord.async_config_entry_first_refresh()
     coord.async_start()
 

@@ -20,6 +20,12 @@ MODULE_ID: Final[str] = "media_apply"
 NAME: Final[str] = "Benni Media Apply"
 
 DATA_COORDINATOR: Final[str] = "coordinator"
+SLEEP_TV_STORAGE_VERSION: Final[int] = 1
+SLEEP_TV_EVIDENCE_CONTRACT_VERSION: Final[str] = "1.0.0"
+
+
+def sleep_tv_storage_key(entry_id: str) -> str:
+    return f"{DOMAIN}_sleep_tv_{entry_id}"
 
 # Panel / WebSocket-API. Der WS-Contract ist das Bleibende (Umbrella-fähig),
 # das Panel ist Wegwerf (folgt). Read frei, Schreiben Admin.
@@ -100,6 +106,8 @@ DENON_CONSUMER_POWER_CHECKED: Final = (DEV_LABEL_PC, DEV_LABEL_TV)
 
 # Bio-State (core_state), bei dem R14 pausiert (Sleep dominant).
 BIO_SLEEP_VALUE: Final = "sleep"
+BIO_PROVISIONAL_SLEEP_VALUE: Final = "provisional_sleep"
+BIO_SLEEP_CONTEXT_VALUES: Final = (BIO_PROVISIONAL_SLEEP_VALUE, BIO_SLEEP_VALUE)
 # R23 — Wake-Übergang: bio_state-Werte, die als „wach" gelten. Der Eintritt in
 # diese Menge (aus einem Nicht-Wach-Zustand) ist der primäre Wake-Trigger — Quelle
 # ist core_state (KEINE Doppel-Detektion der Indikatoren). `waking` wie `awake` (KH-4).
@@ -377,6 +385,7 @@ CONF_SLEEP_TV_WARN_LEAD: Final[str] = "sleep_tv_warn_lead_seconds"
 CONF_SLEEP_TV_NOTIFY: Final[str] = "sleep_tv_notify_service"   # z.B. "notify.living_lgtv"
 CONF_SLEEP_TV_WARN_MESSAGE: Final[str] = "sleep_tv_warn_message"
 DEFAULT_SLEEP_TV_OFF_DELAY: Final[float] = 2700.0   # 45 min (Lastenheft R24)
+DEFAULT_SLEEP_TV_OFF_CONFIRM: Final[float] = 600.0  # Issue #59: 10 min continuous
 DEFAULT_SLEEP_TV_WARN_LEAD: Final[float] = 60.0     # Warnung 1 min vor Aus
 DEFAULT_SLEEP_TV_NOTIFY: Final[str] = "notify.lg_webos_tv_oled77c47la"  # benni-TV (Legacy-notify-Service, kein _deuqdjp-Suffix); leer = keine Warnung
 DEFAULT_SLEEP_TV_WARN_MESSAGE: Final[str] = (
@@ -421,6 +430,7 @@ UID_EXECUTE: Final[str] = "execute"
 UID_NACHLAUF_ACTIVE: Final[str] = "denon_nachlauf_active"
 UID_PLAYBACK_HEALTH: Final[str] = "playback_health"
 UID_PLAYBACK_RECOVERY_STAGE: Final[str] = "playback_recovery_stage"
+UID_SLEEP_TV_EVIDENCE: Final[str] = "sleep_tv_evidence"
 
 DEFAULT_DATA: Final[dict[str, Any]] = {
     "last_action": ACTION_NONE,
@@ -432,4 +442,6 @@ DEFAULT_DATA: Final[dict[str, Any]] = {
     "denon_nachlauf_active": False,
     "playback_health": "idle",
     "playback_recovery_stage": "idle",
+    "sleep_tv_evidence": "inactive",
+    "sleep_tv_evidence_attrs": {},
 }

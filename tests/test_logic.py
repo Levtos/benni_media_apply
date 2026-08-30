@@ -6,6 +6,8 @@ HomePods-Action-Idempotenz (pause/resume/radio + stop_latch), Volume
 """
 from __future__ import annotations
 
+import pytest
+
 import bma_const as C
 import bma_logic as L
 
@@ -820,54 +822,182 @@ def test_tv_wol_webos_priority_over_wattage():
 
 # ------------------------------------------------- Phase 3b: Sleep-TV-Off (R24)
 def _stv(**kw):
-    base = dict(bio_sleep=None, tv_player_state=None, tv_power_on=None,
+    base = dict(bio_sleep=None, bio_state=None, sleep_source=None,
+               sleep_reference_start=None, tv_player_state=None, tv_power_on=None,
                sleep_tv_extend_pressed=False)
     base.update(kw)
     return L.Inputs(**base)
 
 
 def test_sleep_tv_arms_when_sleep_and_tv_on():
-    p, s = L.decide_sleep_tv(_stv(bio_sleep=True, tv_player_state="playing"))
+    p, s = L.decide_sleep_tv(
+        _stv(bio_state="provisional_sleep", tv_power_on=True), now=100.0
+    )
     assert p.intent == L.TIMER_ARM
     assert s.armed is True
+    assert s.deadline == 2800.0
 
 
 def test_sleep_tv_no_arm_when_tv_off():
-    p, s = L.decide_sleep_tv(_stv(bio_sleep=True, tv_player_state="off"))
+    p, s = L.decide_sleep_tv(
+        _stv(bio_state="provisional_sleep", tv_power_on=False), now=100.0
+    )
     assert p.intent == L.TIMER_NONE
     assert s.armed is False
+    assert p.evidence == "confirming_off"
 
 
 def test_sleep_tv_no_arm_when_not_sleep():
-    p, _ = L.decide_sleep_tv(_stv(bio_sleep=False, tv_player_state="playing"))
+    p, _ = L.decide_sleep_tv(_stv(bio_state="awake", tv_power_on=True), now=100.0)
     assert p.intent == L.TIMER_NONE
 
 
 def test_sleep_tv_no_arm_on_unknown_tv():
-    p, _ = L.decide_sleep_tv(_stv(bio_sleep=True, tv_player_state=None, tv_power_on=None))
+    p, _ = L.decide_sleep_tv(
+        _stv(bio_state="provisional_sleep", tv_power_on=None), now=100.0
+    )
     assert p.intent == L.TIMER_NONE
+    assert p.evidence == "unavailable"
 
 
 def test_sleep_tv_extend_when_armed_and_pressed():
-    s = L.SleepTvState(armed=True)
+    s = L.SleepTvState(
+        armed=True,
+        deadline=2800.0,
+        last_bio_state="provisional_sleep",
+        last_tv_on=True,
+    )
     p, ns = L.decide_sleep_tv(
-        _stv(bio_sleep=True, tv_player_state="playing", sleep_tv_extend_pressed=True), s)
+        _stv(
+            bio_state="provisional_sleep",
+            tv_power_on=True,
+            sleep_tv_extend_pressed=True,
+        ),
+        s,
+        now=200.0,
+    )
     assert p.intent == L.TIMER_EXTEND
     assert ns.armed is True
+    assert ns.deadline == 5500.0
 
 
 def test_sleep_tv_cancel_when_sleep_ends():
-    s = L.SleepTvState(armed=True)
-    p, ns = L.decide_sleep_tv(_stv(bio_sleep=False, tv_player_state="playing"), s)
+    s = L.SleepTvState(armed=True, deadline=2800.0, last_bio_state="sleep")
+    p, ns = L.decide_sleep_tv(_stv(bio_state="awake", tv_power_on=True), s, now=200.0)
     assert p.intent == L.TIMER_CANCEL
     assert ns.armed is False
 
 
 def test_sleep_tv_cancel_when_tv_off():
-    s = L.SleepTvState(armed=True)
-    p, ns = L.decide_sleep_tv(_stv(bio_sleep=True, tv_player_state="off"), s)
+    s = L.SleepTvState(
+        armed=True, deadline=2800.0, last_bio_state="provisional_sleep", last_tv_on=True
+    )
+    p, ns = L.decide_sleep_tv(
+        _stv(bio_state="provisional_sleep", tv_power_on=False), s, now=200.0
+    )
     assert p.intent == L.TIMER_CANCEL
     assert ns.armed is False
+
+
+def test_manual_sleep_during_ps_resets_deadline_to_now_plus_45_minutes():
+    s = L.SleepTvState(
+        armed=True,
+        deadline=9999.0,
+        last_bio_state="provisional_sleep",
+        last_tv_on=True,
+    )
+    p, ns = L.decide_sleep_tv(
+        _stv(bio_state="sleep", sleep_source="manual", tv_power_on=True),
+        s,
+        now=1000.0,
+    )
+    assert p.intent == L.TIMER_ARM
+    assert ns.deadline == 3700.0
+    assert ns.timer_source == "manual_sleep_reset"
+
+
+@pytest.mark.parametrize("bio_state", ["provisional_sleep", "sleep"])
+def test_tv_activation_during_sleep_starts_new_full_timer_without_wake(bio_state):
+    s = L.SleepTvState(
+        last_bio_state=bio_state,
+        last_tv_on=False,
+        off_confirmed_since=100.0,
+        off_confirmed_at=700.0,
+    )
+    p, ns = L.decide_sleep_tv(
+        _stv(bio_state=bio_state, tv_power_on=True), s, now=1000.0
+    )
+    assert p.intent == L.TIMER_ARM
+    assert ns.deadline == 3700.0
+    assert ns.timer_source == "tv_activation"
+    assert ns.off_confirmed_at is None
+
+
+def test_tv_off_requires_ten_continuous_confirmed_minutes():
+    first = L.SleepTvState(last_bio_state="provisional_sleep", last_tv_on=True)
+    p, state = L.decide_sleep_tv(
+        _stv(bio_state="provisional_sleep", tv_power_on=False), first, now=1000.0
+    )
+    assert p.evidence == "confirming_off"
+    p, state = L.decide_sleep_tv(
+        _stv(bio_state="provisional_sleep", tv_power_on=False), state, now=1599.0
+    )
+    assert p.evidence == "confirming_off"
+    p, state = L.decide_sleep_tv(
+        _stv(bio_state="provisional_sleep", tv_power_on=False), state, now=1600.0
+    )
+    assert p.evidence == "off_confirmed"
+    assert state.off_confirmed_at == 1600.0
+
+
+def test_unknown_tv_breaks_off_confirmation_and_never_counts_as_off():
+    state = L.SleepTvState(
+        last_bio_state="provisional_sleep",
+        last_tv_on=False,
+        off_confirmed_since=1000.0,
+    )
+    p, state = L.decide_sleep_tv(
+        _stv(bio_state="provisional_sleep", tv_power_on=None), state, now=1599.0
+    )
+    assert p.evidence == "unavailable"
+    assert state.off_confirmed_since is None
+    p, state = L.decide_sleep_tv(
+        _stv(bio_state="provisional_sleep", tv_power_on=False), state, now=1700.0
+    )
+    assert p.evidence == "confirming_off"
+    assert state.off_confirmed_since == 1700.0
+
+
+def test_sleep_tv_state_roundtrip_preserves_restart_deadlines():
+    state = L.SleepTvState(
+        armed=True,
+        deadline=3700.0,
+        timer_source="sleep_context_entry",
+        last_tv_on=True,
+        last_bio_state="provisional_sleep",
+        sleep_reference_start="2026-08-30T22:00:00+00:00",
+        off_commanded_for_deadline=3700.0,
+        warned_for_deadline=3700.0,
+    )
+    assert L.SleepTvState.from_dict(state.as_dict()) == state
+
+
+def test_manual_sleep_with_tv_off_keeps_tv_off_without_timer():
+    state = L.SleepTvState(
+        armed=True,
+        deadline=1300.0,
+        last_bio_state="provisional_sleep",
+        last_tv_on=True,
+    )
+    plan, new_state = L.decide_sleep_tv(
+        _stv(bio_state="sleep", sleep_source="manual", tv_power_on=False),
+        state,
+        now=1000.0,
+    )
+    assert plan.intent == L.TIMER_CANCEL
+    assert new_state.armed is False
+    assert new_state.deadline is None
+    assert plan.evidence == "confirming_off"
 
 
 # ----------------------------------------------------- R23: Wake-Sequenz
@@ -885,6 +1015,13 @@ def test_wake_fires_when_bio_unknown():
 
 def test_wake_suppressed_during_sleep():
     p = L.decide_wake(L.Inputs(wake_trigger_fired=True, bio_sleep=True))
+    assert p.fire is False
+
+
+def test_issue59_wake_sequence_is_also_suppressed_during_provisional_sleep():
+    p = L.decide_wake(
+        L.Inputs(wake_trigger_fired=True, bio_state="provisional_sleep")
+    )
     assert p.fire is False
     assert "r23:suppressed_sleep" in p.reasons
 

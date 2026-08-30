@@ -16,11 +16,13 @@ import asyncio
 import logging
 from collections import deque
 from dataclasses import replace
+from datetime import datetime, timezone
 from typing import Any, Optional
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import Event, HomeAssistant, callback
 from homeassistant.helpers.event import async_call_later, async_track_state_change_event
+from homeassistant.helpers.storage import Store
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
 from homeassistant.util import dt as dt_util
 
@@ -32,6 +34,7 @@ from .const import (
     ACTION_RESUME,
     ACTION_START_RADIO,
     BIO_AWAKE_VALUES,
+    BIO_SLEEP_CONTEXT_VALUES,
     BIO_SLEEP_VALUE,
     CONF_ACTION,
     CONF_APPLY_ENABLED,
@@ -116,6 +119,7 @@ from .const import (
     DEFAULT_RADIO_SEARCH_LIMIT,
     DEFAULT_RADIO_START_SCRIPT,
     DEFAULT_SLEEP_TV_NOTIFY,
+    DEFAULT_SLEEP_TV_OFF_CONFIRM,
     DEFAULT_SLEEP_TV_OFF_DELAY,
     DEFAULT_SLEEP_TV_WARN_LEAD,
     DEFAULT_SLEEP_TV_WARN_MESSAGE,
@@ -138,6 +142,9 @@ from .const import (
     PROFILE_PREFILL,
     PROFILES,
     WATCH_KEYS,
+    SLEEP_TV_EVIDENCE_CONTRACT_VERSION,
+    SLEEP_TV_STORAGE_VERSION,
+    sleep_tv_storage_key,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -180,7 +187,17 @@ class MediaApplyCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self._private_exit_state = logic.PrivateExitState()   # control#3
         self._tv_wol_state = logic.TvWolState()
         self._sleep_tv_state = logic.SleepTvState()
+        self._sleep_tv_store: Store[dict[str, Any]] = Store(
+            hass,
+            SLEEP_TV_STORAGE_VERSION,
+            sleep_tv_storage_key(entry.entry_id),
+        )
         self._sleep_tv_task: Optional[asyncio.Task] = None
+        self._sleep_tv_task_deadline: float | None = None
+        self._sleep_tv_confirmation_task: Optional[asyncio.Task] = None
+        self._sleep_tv_confirmation_deadline: float | None = None
+        self._sleep_tv_last_saved: dict[str, Any] | None = None
+        self._sleep_tv_save_lock = asyncio.Lock()
         self._last_extend_state: str | None = None
         self._wake_task: Optional[asyncio.Task] = None
         self._last_wake_states: dict[str, bool] = {}
@@ -205,6 +222,28 @@ class MediaApplyCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self._log: deque[dict[str, Any]] = deque(maxlen=20)
         self._last_log_sig: tuple | None = None
         self._radio_shortcuts_cache: list[dict[str, Any]] | None = None
+
+    async def async_load_stored(self) -> None:
+        """Load Issue #59's restart-safe absolute deadlines before first refresh."""
+
+        raw = await self._sleep_tv_store.async_load()
+        self._sleep_tv_state = logic.SleepTvState.from_dict(raw)
+        self._sleep_tv_last_saved = self._sleep_tv_state.as_dict()
+
+    def _persist_sleep_tv(self) -> None:
+        if self._sleep_tv_state.as_dict() == self._sleep_tv_last_saved:
+            return
+        self.hass.async_create_task(self._async_persist_sleep_tv())
+
+    async def _async_persist_sleep_tv(self) -> None:
+        """Serialize Store writes and make critical marker writes awaitable."""
+
+        async with self._sleep_tv_save_lock:
+            raw = self._sleep_tv_state.as_dict()
+            if raw == self._sleep_tv_last_saved:
+                return
+            await self._sleep_tv_store.async_save(raw)
+            self._sleep_tv_last_saved = dict(raw)
 
     # ----- profile / binding -----
     @property
@@ -309,6 +348,7 @@ class MediaApplyCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self._cancel_debounce()
         self._cancel_reapply_timer()
         self._cancel_sleep_tv()
+        self._cancel_sleep_tv_confirmation()
         self._cancel_wake()
         self._cancel_radio_resume()
         self._cancel_playback_recovery("unload")
@@ -336,6 +376,11 @@ class MediaApplyCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             return float(st.attributes.get(attr))
         except (TypeError, ValueError):
             return None
+
+    def _attr(self, key: str, attr: str) -> Any:
+        eid = self._entity_id(key)
+        st = self.hass.states.get(eid) if eid else None
+        return st.attributes.get(attr) if st is not None else None
 
     def _float(self, key: str) -> Optional[float]:
         raw = self._state(key)
@@ -447,6 +492,11 @@ class MediaApplyCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             tv_power_on=self._powered(CONF_TV_POWER),
             denon_power_on=self._denon_power_on(),
             bio_sleep=self._bio_sleep(),
+            bio_state=self._state(CONF_BIO_STATE),
+            sleep_source=self._attr(CONF_BIO_STATE, "sleep_source"),
+            sleep_reference_start=self._attr(
+                CONF_BIO_STATE, "sleep_reference_start"
+            ),
             # FLEET-80 Cross-Source-Gate: anderer Denon-Konsument aktiv?
             denon_consumer_active=self._denon_consumer_active(),
             # Phase 4c (R12 TV-WoL).
@@ -501,7 +551,16 @@ class MediaApplyCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             sleep_tv_extend_pressed=self._consume_extend_edge(),
             wake_trigger_fired=self._wake_trigger_fired(bio_to_awake),
         )
-        splan, self._sleep_tv_state = logic.decide_sleep_tv(edge_inp, self._sleep_tv_state)
+        now_epoch = dt_util.utcnow().timestamp()
+        splan, self._sleep_tv_state = logic.decide_sleep_tv(
+            edge_inp,
+            self._sleep_tv_state,
+            now=now_epoch,
+            delay_s=self._duration(
+                CONF_SLEEP_TV_OFF_DELAY, DEFAULT_SLEEP_TV_OFF_DELAY
+            ),
+            confirm_s=DEFAULT_SLEEP_TV_OFF_CONFIRM,
+        )
         wplan = logic.decide_wake(edge_inp)
         wake_radio_start = bool(
             wplan.fire
@@ -546,12 +605,10 @@ class MediaApplyCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         # R12 TV-WoL: SOFORT (kein Debounce), aber apply-gated (automatische Aktion).
         if twol.fire and self.apply_enabled:
             self.hass.async_create_task(self._execute_tv_wol())
-        # R24 Sleep-TV-Off: Timer-Flanken IMMER verarbeiten (Arm/Cancel-Buchwerk
-        # auch im Shadow, für Observability); der reale TV-Off ist gegatet.
-        if splan.intent in (logic.TIMER_ARM, logic.TIMER_EXTEND):
-            self._schedule_sleep_tv()
-        elif splan.intent == logic.TIMER_CANCEL:
-            self._cancel_sleep_tv()
+        # Issue #59: reconcile persisted absolute deadlines instead of starting
+        # relative RAM timers on every arm/extension.
+        self._reconcile_sleep_tv_tasks()
+        self._persist_sleep_tv()
         # R23 Wake-Sequenz: Trigger-Flanke → HomePods 0.10 → Debounce → Ramp auf Ziel.
         if wplan.fire and self.apply_enabled:
             self._schedule_wake()
@@ -590,6 +647,10 @@ class MediaApplyCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             ),
             "playback_health": self._playback_health,
             "playback_recovery_stage": self._playback_recovery_stage,
+            "sleep_tv_evidence": splan.evidence,
+            "sleep_tv_evidence_attrs": self._sleep_tv_evidence_attrs(
+                splan.evidence
+            ),
         }
 
     async def _async_update_data(self) -> dict[str, Any]:
@@ -862,6 +923,10 @@ class MediaApplyCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 "warn_lead_s": self._duration(CONF_SLEEP_TV_WARN_LEAD, DEFAULT_SLEEP_TV_WARN_LEAD),
                 "notify": str(self._opts.get(CONF_SLEEP_TV_NOTIFY, DEFAULT_SLEEP_TV_NOTIFY) or "") or None,
                 "extend_bound": bool(self._entity_id(CONF_SLEEP_TV_EXTEND)),
+                "evidence": (self.data or {}).get("sleep_tv_evidence", "inactive"),
+                **self._sleep_tv_evidence_attrs(
+                    (self.data or {}).get("sleep_tv_evidence", "inactive")
+                ),
             },
             "wake": {
                 "running": self._wake_task is not None and not self._wake_task.done(),
@@ -1573,32 +1638,150 @@ class MediaApplyCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self._last_extend_state = cur
         return pressed
 
+    @staticmethod
+    def _epoch_iso(value: float | None) -> str | None:
+        if value is None:
+            return None
+        return datetime.fromtimestamp(value, tz=timezone.utc).isoformat()
+
+    def _sleep_tv_evidence_attrs(self, evidence: str) -> dict[str, Any]:
+        state = self._sleep_tv_state
+        now = dt_util.utcnow().timestamp()
+        return {
+            "contract_version": SLEEP_TV_EVIDENCE_CONTRACT_VERSION,
+            "evidence": evidence,
+            "sleep_reference_start": state.sleep_reference_start,
+            "deadline": self._epoch_iso(state.deadline),
+            "timer_source": state.timer_source,
+            "off_confirmed_since": self._epoch_iso(state.off_confirmed_since),
+            "off_confirmed_at": self._epoch_iso(state.off_confirmed_at),
+            "off_confirmation_seconds": DEFAULT_SLEEP_TV_OFF_CONFIRM,
+            "off_confirmation_remaining_seconds": (
+                round(max(0.0, state.off_confirmed_since + DEFAULT_SLEEP_TV_OFF_CONFIRM - now), 1)
+                if state.off_confirmed_since is not None
+                and state.off_confirmed_at is None
+                else 0.0 if state.off_confirmed_at is not None else None
+            ),
+            "tv_state_quality": (
+                "fresh" if self._powered(CONF_TV_POWER) is not None else "unavailable"
+            ),
+            "armed": state.armed,
+            "off_commanded_for_deadline": self._epoch_iso(
+                state.off_commanded_for_deadline
+            ),
+            "restart_safe": True,
+        }
+
     @callback
-    def _schedule_sleep_tv(self) -> None:
+    def _reconcile_sleep_tv_tasks(self) -> None:
+        state = self._sleep_tv_state
+        if (
+            state.armed
+            and state.deadline is not None
+            and state.off_commanded_for_deadline != state.deadline
+        ):
+            self._schedule_sleep_tv(state.deadline)
+        else:
+            self._cancel_sleep_tv()
+        if state.off_confirmed_since is not None and state.off_confirmed_at is None:
+            self._schedule_sleep_tv_confirmation(
+                state.off_confirmed_since + DEFAULT_SLEEP_TV_OFF_CONFIRM
+            )
+        else:
+            self._cancel_sleep_tv_confirmation()
+
+    @callback
+    def _schedule_sleep_tv(self, deadline: float) -> None:
+        if (
+            self._sleep_tv_task is not None
+            and not self._sleep_tv_task.done()
+            and self._sleep_tv_task_deadline == deadline
+        ):
+            return
         self._cancel_sleep_tv()
-        self._sleep_tv_task = self.hass.async_create_task(self._run_sleep_tv())
+        self._sleep_tv_task_deadline = deadline
+        self._sleep_tv_task = self.hass.async_create_task(
+            self._run_sleep_tv(deadline)
+        )
 
     @callback
     def _cancel_sleep_tv(self) -> None:
         if self._sleep_tv_task is not None and not self._sleep_tv_task.done():
             self._sleep_tv_task.cancel()
         self._sleep_tv_task = None
+        self._sleep_tv_task_deadline = None
 
-    async def _run_sleep_tv(self) -> None:
-        """R24: nach delay − warn_lead die Warnung, dann warn_lead später den TV aus
-        (beides apply-gated). Extend startet den Task neu (voller delay); Cancel
-        bricht ab. Abbrechbar via asyncio.CancelledError."""
-        delay = self._duration(CONF_SLEEP_TV_OFF_DELAY, DEFAULT_SLEEP_TV_OFF_DELAY)
-        lead = min(self._duration(CONF_SLEEP_TV_WARN_LEAD, DEFAULT_SLEEP_TV_WARN_LEAD), delay)
+    @callback
+    def _schedule_sleep_tv_confirmation(self, deadline: float) -> None:
+        if (
+            self._sleep_tv_confirmation_task is not None
+            and not self._sleep_tv_confirmation_task.done()
+            and self._sleep_tv_confirmation_deadline == deadline
+        ):
+            return
+        self._cancel_sleep_tv_confirmation()
+        self._sleep_tv_confirmation_deadline = deadline
+        self._sleep_tv_confirmation_task = self.hass.async_create_task(
+            self._run_sleep_tv_confirmation(deadline)
+        )
+
+    @callback
+    def _cancel_sleep_tv_confirmation(self) -> None:
+        task = self._sleep_tv_confirmation_task
+        if task is not None and not task.done():
+            task.cancel()
+        self._sleep_tv_confirmation_task = None
+        self._sleep_tv_confirmation_deadline = None
+
+    async def _run_sleep_tv_confirmation(self, deadline: float) -> None:
         try:
-            await asyncio.sleep(max(0.0, delay - lead))
-            if self.apply_enabled:
+            await asyncio.sleep(max(0.0, deadline - dt_util.utcnow().timestamp()))
+        except asyncio.CancelledError:
+            raise
+        self._sleep_tv_confirmation_task = None
+        self._sleep_tv_confirmation_deadline = None
+        self.async_set_updated_data(self._compute())
+
+    async def _run_sleep_tv(self, deadline: float) -> None:
+        """Reconcile one absolute deadline exactly once across HA restarts."""
+        delay = self._duration(CONF_SLEEP_TV_OFF_DELAY, DEFAULT_SLEEP_TV_OFF_DELAY)
+        lead = min(
+            self._duration(CONF_SLEEP_TV_WARN_LEAD, DEFAULT_SLEEP_TV_WARN_LEAD),
+            delay,
+        )
+        try:
+            await asyncio.sleep(
+                max(0.0, deadline - lead - dt_util.utcnow().timestamp())
+            )
+            if self._sleep_tv_state.deadline != deadline:
+                return
+            if (
+                self.apply_enabled
+                and self._sleep_tv_state.warned_for_deadline != deadline
+            ):
+                self._sleep_tv_state.warned_for_deadline = deadline
+                await self._async_persist_sleep_tv()
                 await self._sleep_tv_warn()
-            await asyncio.sleep(max(0.0, lead))
+            await asyncio.sleep(max(0.0, deadline - dt_util.utcnow().timestamp()))
         except asyncio.CancelledError:
             raise
         self._sleep_tv_task = None
+        self._sleep_tv_task_deadline = None
+        if self._sleep_tv_state.deadline != deadline:
+            return
+        inp = self._build_inputs()
+        if (
+            inp.bio_state not in BIO_SLEEP_CONTEXT_VALUES
+            or logic._sleep_tv_is_off(inp) is not False
+        ):
+            return
+        if self._sleep_tv_state.off_commanded_for_deadline == deadline:
+            return
+        # Persist before the service call: a restart between dispatch and the
+        # next TV state event cannot blindly duplicate the same deadline.
+        self._sleep_tv_state.off_commanded_for_deadline = deadline
         self._sleep_tv_state.armed = False
+        await self._async_persist_sleep_tv()
         if self.apply_enabled:
             tv = self._entity_id(CONF_TV_PLAYER)
             if tv:
@@ -1606,6 +1789,7 @@ class MediaApplyCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 await self._svc("media_player", "turn_off", {"entity_id": tv})
         else:
             _LOGGER.debug("media_apply: R24 Sleep-TV-Off abgelaufen (Shadow → kein Off)")
+        self.async_set_updated_data(self._compute())
 
     async def _sleep_tv_warn(self) -> None:
         """TV-Warnung via konfiguriertem notify-Service (z.B. notify.living_lgtv).
