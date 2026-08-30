@@ -26,6 +26,7 @@ from .const import (
     UID_PLAYBACK_HEALTH,
     UID_PLAYBACK_RECOVERY_STAGE,
     UID_RAMP_ACTIVE,
+    UID_SLEEP_TV_EVIDENCE,
     unique_id,
 )
 from .coordinator import MediaApplyCoordinator
@@ -38,6 +39,7 @@ class FieldDesc:
     name: str           # friendly name
     icon: str | None = None
     unit: str | None = None
+    attrs_key: str | None = None
 
 
 SENSORS: tuple[FieldDesc, ...] = (
@@ -52,6 +54,13 @@ SENSORS: tuple[FieldDesc, ...] = (
         UID_PLAYBACK_RECOVERY_STAGE,
         "Playback Recovery Stage",
         "mdi:restore-alert",
+    ),
+    FieldDesc(
+        "sleep_tv_evidence",
+        UID_SLEEP_TV_EVIDENCE,
+        "Sleep TV Evidence",
+        "mdi:television-off",
+        attrs_key="sleep_tv_evidence_attrs",
     ),
 )
 
@@ -96,3 +105,10 @@ class MediaApplyEntity(CoordinatorEntity[MediaApplyCoordinator]):
     @property
     def _value(self) -> Any:
         return (self.coordinator.data or {}).get(self._desc.key)
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        if not self._desc.attrs_key:
+            return {}
+        value = (self.coordinator.data or {}).get(self._desc.attrs_key, {})
+        return dict(value) if isinstance(value, dict) else {}

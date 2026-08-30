@@ -63,6 +63,18 @@ Der harte Pfad ist standardmäßig aus und erfordert eine explizite
 Policy-Gates, Präsenz, Audio-Owner, manuelle Wiedergabe und positives Ziel neu.
 Status und Recovery-Stufe stehen als Sensoren und im WebSocket-Status bereit.
 
+## Sleep-TV PS/S contract (#59)
+
+`provisional_sleep` und `sleep` sperren automatische HomePod-Wake-Sequenzen,
+lassen einen laufenden TV aber bis zur Apply-eigenen Deadline weiterlaufen.
+Deadline, physische +45-Minuten-Verlängerung, manueller PS→S-Reset und ein
+zehnminütiges kontinuierliches TV-Off-Fenster sind restart-fest. Unknown,
+unavailable oder ein Netzwerkverlust zählen nie als TV-Aus. Der versionierte
+`sensor.benni_media_apply_sleep_tv_evidence` stellt Core State ausschließlich
+beobachtende Evidence bereit; Media Apply entscheidet keinen Bio-State.
+
+Details: [Sleep-TV deadline and evidence contract](docs/sleep-tv-evidence-contract.md).
+
 Siehe `FAHRPLAN.md`.
 
 ## Verifikation

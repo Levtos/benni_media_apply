@@ -60,16 +60,21 @@ Analyse-Stand 2026-06-11 (alter Layer: `einhornzentrale/packages/media/`):
   TV-Schauen) → 90s → Denon aus → re-arm = Dauer-Loop (live: nachlauf_active flappte
   alle ~90s, Denon ungewollt aus). Jetzt: nur eine echte on→off-Flanke armt, kein
   Re-Arm während PC/TV durchgehend aus bleibt.
-- **Phase 3b — Sleep-TV-Off R24 ✅ (0.11.0):** Bio-State=sleep + TV läuft → Timer
+- **Phase 3b — Sleep-TV-Off R24 ✅ (0.11.0; Issue-#59-Härtung 0.19.6):**
+  Bio-State=PS/S + kanonischer TV läuft → restart-feste absolute Deadline
   (`sleep_tv_off_delay_seconds`, 45 min) → Warnung auf dem TV (`sleep_tv_notify_service`,
   z.B. `notify.living_lgtv`, `sleep_tv_warn_lead_seconds` vorab) → TV aus, sofern nicht
-  verlängert. **Lichtschalter-Verlängern** über `sleep_tv_extend_entity` (State-Change =
-  Druck → Timer-Neustart, mehrfach). Abbruch bei Sleep-Ende/TV-aus. Abbrechbarer
-  asyncio-Timer wie der Denon-Nachlauf; TV-aus + Warnung **apply-gated**. Pure-Logic
-  `decide_sleep_tv` (arm/cancel/extend, TV-Zustand unbekannt → fail-safe), 7 neue Tests.
+  verlängert. **Lichtschalter-Verlängern** über `sleep_tv_extend_entity`
+  addiert 45 Minuten zur laufenden Deadline. Manueller PS→S setzt auf
+  `now + 45 min`; TV-Aktivierung in PS/S startet eine neue volle Deadline.
+  Zehn kontinuierliche Minuten bestätigtes Master-TV-Aus werden versioniert
+  als Core-State-Evidence publiziert. Unknown/unavailable unterbricht die
+  Bestätigung. Persistenz und Exactly-once-Marker verhindern blinde Doppelaktion
+  nach HA-Neustart; TV-aus + Warnung bleiben **apply-gated**.
   R25 „Sleep dominant" (HomePods aus / TV-Denon-Sleep-Volumes) ist durch die
   Decision→Apply-Pipeline gedeckt (media_policy entscheidet, Apply führt aus).
-  Observability: `status().sleep_tv`.
+  Observability: `status().sleep_tv` und
+  `sensor.benni_media_apply_sleep_tv_evidence`.
 - **Phase 4a — Debounce (R2) + serialisierte Ausführung (R3) ✅ (0.7.0):** Geräte-
   Schaltung läuft jetzt über ein konfigurierbares Debounce-Fenster (`debounce_seconds`,
   default 5s) → Trigger-Bursts fallen zu EINER Aktion zusammen; **Quiet bricht

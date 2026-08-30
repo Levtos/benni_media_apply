@@ -23,6 +23,9 @@ from .const import (
     ACTION_PAUSE,
     ACTION_RESUME,
     ACTION_START_RADIO,
+    BIO_PROVISIONAL_SLEEP_VALUE,
+    BIO_SLEEP_CONTEXT_VALUES,
+    BIO_SLEEP_VALUE,
     DENON_CONSUMER_POWER_CHECKED,
     DEV_LABEL_PC,
     DEV_LABEL_TV,
@@ -32,6 +35,8 @@ from .const import (
     DEFAULT_DUCKED_LEVEL,
     DEFAULT_RADIO_DISPATCH_COOLDOWN,
     DEFAULT_RADIO_DISPATCH_MAX_BACKOFF,
+    DEFAULT_SLEEP_TV_OFF_CONFIRM,
+    DEFAULT_SLEEP_TV_OFF_DELAY,
     DEFAULT_RAMP_STEP_DELAY,
     DEFAULT_RAMP_STEPS,
     DEFAULT_TINY_DELTA,
@@ -90,6 +95,9 @@ class Inputs:
     tv_power_on: Optional[bool] = None
     denon_power_on: Optional[bool] = None
     bio_sleep: Optional[bool] = None
+    bio_state: Optional[str] = None
+    sleep_source: Optional[str] = None
+    sleep_reference_start: Optional[str] = None
     # FLEET-80 — Cross-Source-Gate: ist ein ANDERER Denon-Konsument (TV/ATV/PS5/
     # Switch/PC) aktiv? Dann darf der Nachlauf den geteilten Denon NICHT
     # ausschalten. None = unbekannt ⇒ konservativ wie „aktiv" (Denon bleibt an).
@@ -1147,6 +1155,18 @@ def _tv_is_off(inp: "Inputs") -> Optional[bool]:
     return not inp.tv_power_on
 
 
+def _sleep_tv_is_off(inp: "Inputs") -> Optional[bool]:
+    """Issue #59 TV evidence from the canonical TV Master only.
+
+    A missing/unavailable master is unknown, never an off observation.  The raw
+    WebOS player remains the actuator and WoL input but cannot certify sleep.
+    """
+
+    if inp.tv_power_on is None:
+        return None
+    return not inp.tv_power_on
+
+
 def decide_tv_wol(
     inp: "Inputs", state: Optional[TvWolState] = None
 ) -> tuple[TvWolPlan, TvWolState]:
@@ -1183,9 +1203,42 @@ def decide_tv_wol(
 # --------------------------------------------------------------------------- #
 @dataclass
 class SleepTvState:
-    """Edge-Buchwerk des Sleep-TV-Off-Timers (RAM/Coordinator-Ticks)."""
+    """Restart-safe wall-clock state for timer and continuous off evidence."""
 
     armed: bool = False
+    deadline: Optional[float] = None
+    timer_source: Optional[str] = None
+    off_confirmed_since: Optional[float] = None
+    off_confirmed_at: Optional[float] = None
+    last_tv_on: Optional[bool] = None
+    last_bio_state: Optional[str] = None
+    sleep_reference_start: Optional[str] = None
+    off_commanded_for_deadline: Optional[float] = None
+    warned_for_deadline: Optional[float] = None
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "armed": self.armed,
+            "deadline": self.deadline,
+            "timer_source": self.timer_source,
+            "off_confirmed_since": self.off_confirmed_since,
+            "off_confirmed_at": self.off_confirmed_at,
+            "last_tv_on": self.last_tv_on,
+            "last_bio_state": self.last_bio_state,
+            "sleep_reference_start": self.sleep_reference_start,
+            "off_commanded_for_deadline": self.off_commanded_for_deadline,
+            "warned_for_deadline": self.warned_for_deadline,
+        }
+
+    @classmethod
+    def from_dict(cls, raw: Any) -> "SleepTvState":
+        if not isinstance(raw, dict):
+            return cls()
+        return cls(**{
+            key: raw.get(key)
+            for key in cls.__dataclass_fields__
+            if key in raw
+        })
 
 
 @dataclass
@@ -1194,40 +1247,128 @@ class SleepTvPlan:
 
     intent: str = TIMER_NONE
     reasons: list = field(default_factory=list)
+    evidence: str = "inactive"
 
     def as_dict(self) -> dict[str, Any]:
-        return {"intent": self.intent, "reasons": list(self.reasons)}
+        return {
+            "intent": self.intent,
+            "reasons": list(self.reasons),
+            "evidence": self.evidence,
+        }
 
 
 TIMER_EXTEND: Final = "extend"
 
 
 def decide_sleep_tv(
-    inp: "Inputs", state: Optional[SleepTvState] = None
+    inp: "Inputs",
+    state: Optional[SleepTvState] = None,
+    *,
+    now: float = 0.0,
+    delay_s: float = DEFAULT_SLEEP_TV_OFF_DELAY,
+    confirm_s: float = DEFAULT_SLEEP_TV_OFF_CONFIRM,
 ) -> tuple[SleepTvPlan, SleepTvState]:
-    """R24: Bio-State=sleep + TV läuft → Timer arm (Coordinator: 45 min → Warnung
-    → TV aus). Lichtschalter-Druck verlängert (EXTEND). Sleep-Ende oder TV aus →
-    CANCEL. TV-Zustand unbekannt (None) armt nicht (fail-safe)."""
+    """Issue #59 timer/evidence transition using absolute wall-clock deadlines."""
     if state is None:
         state = SleepTvState()
     p = SleepTvPlan()
-    ns = SleepTvState(armed=state.armed)
+    ns = SleepTvState.from_dict(state.as_dict())
     reasons: list[str] = []
 
-    tv_off = _tv_is_off(inp)
-    cond = inp.bio_sleep is True and tv_off is False   # Sleep aktiv UND TV an
+    tv_off = _sleep_tv_is_off(inp)
+    sleep_context = inp.bio_state in BIO_SLEEP_CONTEXT_VALUES
+    entered_sleep_context = (
+        ns.last_bio_state not in BIO_SLEEP_CONTEXT_VALUES and sleep_context
+    )
+    manual_ps_to_s = (
+        ns.last_bio_state == BIO_PROVISIONAL_SLEEP_VALUE
+        and inp.bio_state == BIO_SLEEP_VALUE
+        and inp.sleep_source == "manual"
+    )
 
-    if cond and not ns.armed:
-        p.intent = TIMER_ARM
-        ns.armed = True
-        reasons.append("r24:arm")
-    elif cond and ns.armed and inp.sleep_tv_extend_pressed:
-        p.intent = TIMER_EXTEND
-        reasons.append("r24:extend")
-    elif not cond and ns.armed:
-        p.intent = TIMER_CANCEL
+    if not sleep_context:
+        if ns.armed or ns.deadline is not None or ns.off_confirmed_since is not None:
+            p.intent = TIMER_CANCEL
+            reasons.append("issue59:sleep_context_ended")
         ns.armed = False
-        reasons.append("r24:cancel")
+        ns.deadline = None
+        ns.timer_source = None
+        ns.off_confirmed_since = None
+        ns.off_confirmed_at = None
+        ns.sleep_reference_start = None
+        ns.off_commanded_for_deadline = None
+        ns.warned_for_deadline = None
+    elif tv_off is False:
+        tv_activated = ns.last_tv_on is False
+        ns.off_confirmed_since = None
+        ns.off_confirmed_at = None
+        if manual_ps_to_s:
+            ns.deadline = now + max(0.0, delay_s)
+            ns.timer_source = "manual_sleep_reset"
+            ns.off_commanded_for_deadline = None
+            ns.warned_for_deadline = None
+            p.intent = TIMER_ARM
+            reasons.append("issue59:manual_sleep_reset_now_plus_45m")
+        elif entered_sleep_context or tv_activated or ns.deadline is None:
+            ns.deadline = now + max(0.0, delay_s)
+            ns.timer_source = (
+                "tv_activation" if tv_activated else "sleep_context_entry"
+            )
+            ns.off_commanded_for_deadline = None
+            ns.warned_for_deadline = None
+            p.intent = TIMER_ARM
+            reasons.append(f"issue59:{ns.timer_source}")
+        elif inp.sleep_tv_extend_pressed:
+            ns.deadline += max(0.0, delay_s)
+            ns.timer_source = "physical_extension"
+            ns.off_commanded_for_deadline = None
+            ns.warned_for_deadline = None
+            p.intent = TIMER_EXTEND
+            reasons.append("issue59:deadline_plus_45m")
+        ns.armed = not (
+            ns.deadline is not None
+            and ns.deadline <= now
+            and ns.off_commanded_for_deadline == ns.deadline
+        )
+        ns.sleep_reference_start = inp.sleep_reference_start
+        p.evidence = "tv_active"
+    elif tv_off is True:
+        if ns.armed or ns.deadline is not None:
+            p.intent = TIMER_CANCEL
+            reasons.append("issue59:verified_tv_off")
+        ns.armed = False
+        ns.deadline = None
+        ns.timer_source = None
+        ns.off_commanded_for_deadline = None
+        ns.warned_for_deadline = None
+        if ns.last_tv_on is not False or ns.off_confirmed_since is None:
+            ns.off_confirmed_since = now
+            ns.off_confirmed_at = None
+            reasons.append("issue59:off_confirmation_started")
+        if now - ns.off_confirmed_since >= max(0.0, confirm_s):
+            ns.off_confirmed_at = ns.off_confirmed_since + max(0.0, confirm_s)
+            p.evidence = "off_confirmed"
+        else:
+            p.evidence = "confirming_off"
+        ns.sleep_reference_start = inp.sleep_reference_start
+    else:
+        # A disconnect breaks continuous off evidence, but keeps an existing
+        # absolute TV-off deadline so restoration cannot silently reset it.
+        ns.off_confirmed_since = None
+        ns.off_confirmed_at = None
+        p.evidence = "unavailable"
+        reasons.append("issue59:tv_unknown_not_off")
+
+    if tv_off is not None:
+        ns.last_tv_on = not tv_off
+    ns.last_bio_state = inp.bio_state
+    if not p.evidence:
+        p.evidence = "inactive"
+    if not sleep_context and p.evidence == "inactive":
+        p.evidence = "inactive"
+
+    if p.intent == TIMER_NONE and state.armed and not ns.armed:
+        p.intent = TIMER_CANCEL
 
     p.reasons = reasons
     return p, ns
@@ -1262,7 +1403,7 @@ def decide_wake(inp: "Inputs") -> WakePlan:
         # solange wir nicht wissen, ob zuhause. Laufende Musik bleibt trotzdem.
         p.reasons.append("r23:suppressed_presence_unknown")
         return p
-    if inp.bio_sleep is True:
+    if inp.bio_sleep is True or inp.bio_state in BIO_SLEEP_CONTEXT_VALUES:
         p.reasons.append("r23:suppressed_sleep")
         return p
     # control#3: Private Time darf NIE eine HomePod-Wake-Sequenz ausloesen
