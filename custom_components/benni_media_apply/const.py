@@ -341,6 +341,10 @@ DEFAULT_PLAYBACK_RECOVERY_HARD_AFTER: Final[float] = 300.0
 DEFAULT_PLAYBACK_RECOVERY_RECHECK: Final[float] = 30.0
 DEFAULT_PLAYBACK_HEALTH_SAMPLES: Final[int] = 3
 DEFAULT_PLAYBACK_HEALTH_SAMPLE_INTERVAL: Final[float] = 5.0
+DEFAULT_STUCK_MUTE_RETRY_ATTEMPTS: Final[int] = 2
+DEFAULT_STUCK_MUTE_RETRY_DELAY: Final[float] = 2.0
+DEFAULT_STUCK_MUTE_EVENT_COOLDOWN: Final[float] = 30.0
+DEFAULT_STUCK_MUTE_BACKSTOP_INTERVAL: Final[float] = 1800.0
 DEFAULT_PLAYBACK_HARD_RECOVERY: Final[bool] = False
 DEFAULT_MUSIC_ASSISTANT_APP_ID: Final[str] = ""
 DEFAULT_MUSIC_ASSISTANT_RESTART_WAIT: Final[float] = 60.0
@@ -441,6 +445,7 @@ DEFAULT_DATA: Final[dict[str, Any]] = {
     "execute": False,
     "denon_nachlauf_active": False,
     "playback_health": "idle",
+    "playback_health_attrs": {},
     "playback_recovery_stage": "idle",
     "sleep_tv_evidence": "inactive",
     "sleep_tv_evidence_attrs": {},

@@ -16,12 +16,16 @@ import asyncio
 import logging
 from collections import deque
 from dataclasses import replace
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import Event, HomeAssistant, callback
-from homeassistant.helpers.event import async_call_later, async_track_state_change_event
+from homeassistant.helpers.event import (
+    async_call_later,
+    async_track_state_change_event,
+    async_track_time_interval,
+)
 from homeassistant.helpers.storage import Store
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
 from homeassistant.util import dt as dt_util
@@ -113,6 +117,10 @@ from .const import (
     DEFAULT_PLAYBACK_RECOVERY_HARD_AFTER,
     DEFAULT_PLAYBACK_RECOVERY_RECHECK,
     DEFAULT_PLAYBACK_RECOVERY_SETTLE,
+    DEFAULT_STUCK_MUTE_BACKSTOP_INTERVAL,
+    DEFAULT_STUCK_MUTE_EVENT_COOLDOWN,
+    DEFAULT_STUCK_MUTE_RETRY_ATTEMPTS,
+    DEFAULT_STUCK_MUTE_RETRY_DELAY,
     DEFAULT_PROFILE,
     DEFAULT_RADIO_AUTOSTART,
     DEFAULT_RADIO_RESUME_DELAY,
@@ -206,6 +214,12 @@ class MediaApplyCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self._radio_dispatch_state = logic.RadioDispatchState()
         # #41 — genau ein Besitzer für Wake-Start + gestufte Recovery.
         self._playback_recovery_task: Optional[asyncio.Task] = None
+        self._stuck_mute_task: Optional[asyncio.Task] = None
+        self._stuck_mute_backstop_unsub = None
+        self._unsub_pod_state = None
+        self._last_unmute_attempt_at: float | None = None
+        self._stuck_mute_retry_not_before = 0.0
+        self._playback_recovery_source: str | None = None
         self._wake_start_owned = False
         self._playback_health = "idle"
         self._playback_health_reason: str | None = None
@@ -336,10 +350,34 @@ class MediaApplyCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 self.hass, watched, self._on_state_change
             )
             self.entry.async_on_unload(self._unsub_state)
+        pods = self._homepods_volume_targets()
+        if pods:
+            self._unsub_pod_state = async_track_state_change_event(
+                self.hass, pods, self._on_pod_state_change
+            )
+            self.entry.async_on_unload(self._unsub_pod_state)
+        self._stuck_mute_backstop_unsub = async_track_time_interval(
+            self.hass,
+            self._on_stuck_mute_backstop,
+            timedelta(seconds=DEFAULT_STUCK_MUTE_BACKSTOP_INTERVAL),
+        )
+        self.entry.async_on_unload(self._stuck_mute_backstop_unsub)
 
     @callback
     def _on_state_change(self, _event: Event) -> None:
         self.async_set_updated_data(self._compute())
+
+    @callback
+    def _on_pod_state_change(self, _event: Event) -> None:
+        """Observe pod mute/state changes without re-running volume/ramp planning."""
+
+        self._schedule_stuck_mute_recovery(source="event")
+
+    @callback
+    def _on_stuck_mute_backstop(self, _now: datetime) -> None:
+        """Thirty-minute unmute-only safety net; never starts or changes volume."""
+
+        self._schedule_stuck_mute_recovery(source="backstop")
 
     @callback
     def async_shutdown_ramp(self) -> None:
@@ -352,6 +390,7 @@ class MediaApplyCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self._cancel_wake()
         self._cancel_radio_resume()
         self._cancel_playback_recovery("unload")
+        self._cancel_stuck_mute_recovery()
         for key in list(self._nachlauf_tasks):
             self._cancel_nachlauf(key)
 
@@ -511,11 +550,16 @@ class MediaApplyCoordinator(DataUpdateCoordinator[dict[str, Any]]):
     def _compute(self, *, force_execute: bool = False) -> dict[str, Any]:
         inputs = self._build_inputs()
         media_blocked = logic.media_block_reason(inputs) is not None
-        recovery_block = logic.playback_recovery_block_reason(
-            inputs,
-            require_positive_target=self._playback_recovery_stage
-            not in ("initial_start", "settling"),
-        )
+        if self._playback_recovery_stage == "initial_start":
+            recovery_block = logic.playback_start_block_reason(
+                inputs, require_positive_target=False
+            )
+        else:
+            recovery_block = logic.playback_repair_block_reason(
+                inputs,
+                managed_episode=self._wake_start_owned,
+                require_positive_target=self._playback_recovery_stage != "settling",
+            )
         if self._wake_start_owned and recovery_block is not None:
             self._cancel_playback_recovery(recovery_block)
         if media_blocked:
@@ -626,6 +670,7 @@ class MediaApplyCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             ):
                 # Trigger B: manuelle Wiedergabe endete → nach Delay fortsetzen.
                 self._schedule_radio_resume()
+        self._schedule_stuck_mute_recovery(source="event")
         # FLEET-44/98: der manuelle private_time-Latch + seine Auto-Löschung
         # leben jetzt nativ in media_state (switch-Entität) — apply verwaltet
         # ihn nicht mehr.
@@ -646,6 +691,7 @@ class MediaApplyCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 self._nachlauf_state.pc_armed or self._nachlauf_state.tv_armed
             ),
             "playback_health": self._playback_health,
+            "playback_health_attrs": self._playback_health_attrs(),
             "playback_recovery_stage": self._playback_recovery_stage,
             "sleep_tv_evidence": splan.evidence,
             "sleep_tv_evidence_attrs": self._sleep_tv_evidence_attrs(
@@ -1129,7 +1175,9 @@ class MediaApplyCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self._wake_start_owned = False
         if self._playback_recovery_stage not in ("idle", "healthy", "failed"):
             self._playback_recovery_stage = "cancelled"
+            self._playback_health = "inactive"
             self._playback_health_reason = reason
+            self._playback_recovery_source = "wake"
 
     def _set_playback_recovery(
         self, stage: str, *, health: str | None = None, reason: str | None = None
@@ -1142,22 +1190,51 @@ class MediaApplyCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             self.async_set_updated_data({
                 **self.data,
                 "playback_health": self._playback_health,
+                "playback_health_attrs": self._playback_health_attrs(),
                 "playback_recovery_stage": self._playback_recovery_stage,
             })
+
+    def _playback_health_attrs(self) -> dict[str, Any]:
+        return {
+            "reason": self._playback_health_reason,
+            "source": self._playback_recovery_source,
+            "attempts": self._playback_recovery_attempts,
+            "wake_start_owned": self._wake_start_owned,
+            "backstop_interval_seconds": DEFAULT_STUCK_MUTE_BACKSTOP_INTERVAL,
+            "unmute_cooldown_remaining_seconds": round(
+                max(0.0, self._stuck_mute_retry_not_before - self.hass.loop.time()),
+                1,
+            ),
+        }
+
+    def _managed_playback_episode(self, inp: logic.Inputs) -> bool:
+        return self._wake_start_owned or inp.planned_station_playing is True
+
+    def _repair_block_reason(
+        self, *, require_positive_target: bool = True
+    ) -> str | None:
+        inp = self._build_inputs()
+        return logic.playback_repair_block_reason(
+            inp,
+            managed_episode=self._managed_playback_episode(inp),
+            require_positive_target=require_positive_target,
+        )
 
     async def _recovery_sleep(
         self, delay: float, *, require_positive_target: bool = True
     ) -> bool:
         await asyncio.sleep(max(0.0, delay))
-        reason = logic.playback_recovery_block_reason(
-            self._build_inputs(), require_positive_target=require_positive_target
+        reason = self._repair_block_reason(
+            require_positive_target=require_positive_target
         )
         if reason is not None:
             self._set_playback_recovery("cancelled", health="inactive", reason=reason)
             return False
         return True
 
-    def _playback_health_snapshot(self) -> logic.PlaybackHealth:
+    def _playback_member_snapshot(
+        self,
+    ) -> tuple[str | None, list[str], list[str | None], list[bool | None]]:
         group = self._entity_id(CONF_HOMEPODS_PLAYER)
         group_obj = self.hass.states.get(group) if group else None
         pods = self._homepods_volume_targets()
@@ -1172,16 +1249,41 @@ class MediaApplyCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             )
             muted = state.attributes.get("is_volume_muted") if state is not None else None
             pod_muted.append(muted if isinstance(muted, bool) else None)
-        return logic.playback_health(
-            group_state=(
+        group_state = (
                 group_obj.state
                 if group_obj is not None
                 and group_obj.state not in ("unknown", "unavailable")
                 else None
-            ),
+            )
+        return group_state, pods, pod_states, pod_muted
+
+    def _playback_health_snapshot(self) -> logic.PlaybackHealth:
+        group_state, _pods, pod_states, pod_muted = self._playback_member_snapshot()
+        return logic.playback_health(
+            group_state=group_state,
             pod_states=pod_states,
             pod_muted=pod_muted,
             target=self._float(CONF_VOL_TARGET_HOMEPODS),
+        )
+
+    def _stuck_mute_targets(self) -> tuple[str, ...]:
+        group_state, pods, pod_states, pod_muted = self._playback_member_snapshot()
+        return logic.stuck_mute_targets(
+            group_state=group_state,
+            entity_ids=pods,
+            pod_states=pod_states,
+            pod_muted=pod_muted,
+        )
+
+    def _unconfirmed_unmute_targets(
+        self, targets: tuple[str, ...]
+    ) -> tuple[str, ...]:
+        _group_state, pods, _pod_states, pod_muted = self._playback_member_snapshot()
+        muted_by_entity = dict(zip(pods, pod_muted))
+        return tuple(
+            entity_id
+            for entity_id in targets
+            if muted_by_entity.get(entity_id) is not False
         )
 
     async def _stable_playback_health(self) -> logic.PlaybackHealth:
@@ -1201,29 +1303,155 @@ class MediaApplyCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             health = self._playback_health_snapshot()
         return health
 
-    async def _unmute_homepods(self) -> bool:
-        if logic.playback_recovery_block_reason(self._build_inputs()) is not None:
-            return False
-        pods = self._homepods_volume_targets()
-        if not pods:
-            return False
-        try:
+    async def _wait_for_playing_homepods(self, timeout: float = 15.0) -> bool:
+        deadline = self.hass.loop.time() + max(0.0, timeout)
+        while True:
+            group_state, _pods, pod_states, _muted = self._playback_member_snapshot()
+            if (
+                group_state in PLAYER_PLAYING_VALUES
+                and pod_states
+                and all(state in PLAYER_PLAYING_VALUES for state in pod_states)
+            ):
+                return True
+            remaining = deadline - self.hass.loop.time()
+            if remaining <= 0.0:
+                return False
+            if not await self._recovery_sleep(
+                min(1.0, remaining), require_positive_target=False
+            ):
+                return False
+
+    async def _unmute_homepods(
+        self,
+        *,
+        source: str,
+        force_all: bool = False,
+        update_diagnostics: bool = False,
+    ) -> logic.UnmuteResult:
+        reason = self._repair_block_reason()
+        if reason is not None:
+            return logic.UnmuteResult("cancelled", 0, reason=reason)
+        pods = tuple(self._homepods_volume_targets())
+        targets = pods if force_all else self._stuck_mute_targets()
+        if not targets:
+            return logic.UnmuteResult("not_needed", 0)
+
+        async def _call(entity_ids: tuple[str, ...]) -> None:
+            self._last_unmute_attempt_at = self.hass.loop.time()
             await self.hass.services.async_call(
                 "media_player",
                 "volume_mute",
-                {"entity_id": pods, "is_volume_muted": False},
+                {"entity_id": list(entity_ids), "is_volume_muted": False},
                 blocking=True,
             )
-            return True
+
+        def _block_reason() -> str | None:
+            current_reason = self._repair_block_reason()
+            if current_reason is not None:
+                return current_reason
+            group_state, _pods, pod_states, _muted = self._playback_member_snapshot()
+            if group_state not in PLAYER_PLAYING_VALUES or not pod_states:
+                return "playback_not_playing"
+            if not all(state in PLAYER_PLAYING_VALUES for state in pod_states):
+                return "playback_not_playing"
+            return None
+
+        result = await logic.bounded_unmute(
+            targets,
+            unmute=_call,
+            remaining_muted=lambda: self._unconfirmed_unmute_targets(targets),
+            wait=asyncio.sleep,
+            block_reason=_block_reason,
+            max_attempts=DEFAULT_STUCK_MUTE_RETRY_ATTEMPTS,
+            retry_delay=DEFAULT_STUCK_MUTE_RETRY_DELAY,
+        )
+        self._playback_recovery_attempts += result.attempts
+        if update_diagnostics:
+            self._playback_recovery_source = source
+            if result.state in ("recovered", "not_needed"):
+                health = self._playback_health_snapshot()
+                self._set_playback_recovery(
+                    "unmute_recovered",
+                    health="healthy" if health.state == "healthy" else health.state,
+                    reason=health.reason,
+                )
+            elif result.state == "cancelled":
+                self._set_playback_recovery(
+                    "cancelled", health="inactive", reason=result.reason
+                )
+            else:
+                self._set_playback_recovery(
+                    "unmute_failed", health="unhealthy", reason=result.reason
+                )
+                _LOGGER.warning(
+                    "media_apply: HomePods unmute failed after %s attempts (%s)",
+                    result.attempts,
+                    result.reason,
+                )
+        return result
+
+    @callback
+    def _schedule_stuck_mute_recovery(self, *, source: str) -> None:
+        if self._playback_recovery_task is not None and not self._playback_recovery_task.done():
+            return
+        reason = self._repair_block_reason()
+        if reason is not None:
+            self._cancel_stuck_mute_recovery()
+            return
+        if not self._stuck_mute_targets():
+            return
+        if self._stuck_mute_task is not None and not self._stuck_mute_task.done():
+            return
+        now = self.hass.loop.time()
+        if now < self._stuck_mute_retry_not_before:
+            return
+        if (
+            self._last_unmute_attempt_at is not None
+            and now - self._last_unmute_attempt_at < DEFAULT_STUCK_MUTE_EVENT_COOLDOWN
+        ):
+            return
+        self._stuck_mute_task = self.hass.async_create_task(
+            self._run_stuck_mute_recovery(source)
+        )
+
+    @callback
+    def _cancel_stuck_mute_recovery(self) -> None:
+        task = self._stuck_mute_task
+        if task is not None and not task.done() and task is not asyncio.current_task():
+            task.cancel()
+        self._stuck_mute_task = None
+
+    async def _run_stuck_mute_recovery(self, source: str) -> None:
+        self._playback_recovery_source = source
+        self._set_playback_recovery(
+            "unmute_recovery",
+            health="unhealthy",
+            reason="stuck_mute_detected",
+        )
+        try:
+            result = await self._unmute_homepods(
+                source=source, force_all=False, update_diagnostics=True
+            )
+            if result.state == "failed":
+                self._stuck_mute_retry_not_before = (
+                    self.hass.loop.time() + DEFAULT_STUCK_MUTE_BACKSTOP_INTERVAL
+                )
+                if self.data is not None:
+                    self.async_set_updated_data(
+                        {
+                            **self.data,
+                            "playback_health_attrs": self._playback_health_attrs(),
+                        }
+                    )
         except asyncio.CancelledError:
             raise
-        except Exception as err:  # noqa: BLE001
-            self._playback_health_reason = f"unmute_failed:{err}"
-            _LOGGER.warning("media_apply: HomePods unmute failed: %s", err)
-            return False
+        finally:
+            if self._stuck_mute_task is asyncio.current_task():
+                self._stuck_mute_task = None
 
     async def _run_radio_autostart(self) -> None:
         """Single-flight Wake-Start with soft and optional hard recovery (#41)."""
+        self._playback_recovery_source = "wake"
         latch = self._entity_id(CONF_STOP_LATCH)
         if latch:
             await self._svc(
@@ -1240,7 +1468,7 @@ class MediaApplyCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 raise
         try:
             inp = self._build_inputs()
-            reason = logic.playback_recovery_block_reason(
+            reason = logic.playback_start_block_reason(
                 inp, require_positive_target=False
             )
             if reason is not None:
@@ -1257,7 +1485,10 @@ class MediaApplyCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             self._set_playback_recovery("settling", health="settling")
             if not await self._recovery_sleep(2.0, require_positive_target=False):
                 return
-            await self._unmute_homepods()
+            if await self._wait_for_playing_homepods():
+                await self._unmute_homepods(
+                    source="wake_initial", force_all=True
+                )
 
             if not self._playback_recovery_enabled:
                 self._set_playback_recovery("complete", health="unmonitored")
@@ -1290,7 +1521,10 @@ class MediaApplyCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             )
             if not await self._recovery_sleep(2.0):
                 return
-            await self._unmute_homepods()
+            if await self._wait_for_playing_homepods():
+                await self._unmute_homepods(
+                    source="wake_soft_recovery", force_all=True
+                )
             if not await self._recovery_sleep(DEFAULT_PLAYBACK_RECOVERY_RECHECK):
                 return
             health = await self._stable_playback_health()
@@ -1364,7 +1598,7 @@ class MediaApplyCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         ):
             self._playback_health_reason = "hard_recovery_cooldown"
             return False
-        if logic.playback_recovery_block_reason(self._build_inputs()) is not None:
+        if self._repair_block_reason() is not None:
             return False
         self._last_hard_recovery_at = now
         self._playback_recovery_attempts += 1
@@ -1394,7 +1628,10 @@ class MediaApplyCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         )
         if not dispatched or not await self._recovery_sleep(2.0):
             return False
-        await self._unmute_homepods()
+        if await self._wait_for_playing_homepods():
+            await self._unmute_homepods(
+                source="wake_hard_recovery", force_all=True
+            )
         return True
 
     @callback
@@ -1459,7 +1696,9 @@ class MediaApplyCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             return False
         inp = self._build_inputs()
         recovery_block = (
-            logic.playback_recovery_block_reason(inp)
+            logic.playback_repair_block_reason(
+                inp, managed_episode=self._managed_playback_episode(inp)
+            )
             if replace_existing
             else None
         )

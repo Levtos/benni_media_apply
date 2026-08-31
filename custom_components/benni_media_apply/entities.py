@@ -47,7 +47,11 @@ SENSORS: tuple[FieldDesc, ...] = (
     FieldDesc("homepods_target", UID_HOMEPODS_TARGET, "HomePods Target", "mdi:speaker", "%"),
     FieldDesc("denon_target", UID_DENON_TARGET, "Denon Target", "mdi:audio-video", "%"),
     FieldDesc(
-        "playback_health", UID_PLAYBACK_HEALTH, "Playback Health", "mdi:heart-pulse"
+        "playback_health",
+        UID_PLAYBACK_HEALTH,
+        "Playback Health",
+        "mdi:heart-pulse",
+        attrs_key="playback_health_attrs",
     ),
     FieldDesc(
         "playback_recovery_stage",
