@@ -15,7 +15,7 @@ Restore (R20), Denon-Nachlauf (R13/R14), Sleep-Off (R24/R25) folgen.
 from __future__ import annotations
 
 from dataclasses import dataclass, field, replace
-from typing import Any, Final, Optional
+from typing import Any, Awaitable, Callable, Final, Optional, Sequence
 
 from .const import (
     ACTION_DENON_OFF,
@@ -179,6 +179,16 @@ class PlaybackHealth:
     """
 
     state: str
+    reason: Optional[str] = None
+
+
+@dataclass(frozen=True)
+class UnmuteResult:
+    """Result of one bounded, state-confirmed unmute operation."""
+
+    state: str
+    attempts: int
+    remaining: tuple[str, ...] = ()
     reason: Optional[str] = None
 
 
@@ -398,10 +408,10 @@ def should_autostart_radio(inp: "Inputs") -> bool:
     )
 
 
-def playback_recovery_block_reason(
+def playback_start_block_reason(
     inp: "Inputs", *, require_positive_target: bool = True
 ) -> Optional[str]:
-    """Return why a delayed wake recovery must stop before touching playback.
+    """Return why a delayed Wake start must stop before touching playback.
 
     Every delayed stage reuses this pure gate. That prevents a soft retry or an
     app restart after the user went back to sleep, pressed Stop, started manual
@@ -437,6 +447,125 @@ def playback_recovery_block_reason(
     return None
 
 
+def playback_recovery_block_reason(
+    inp: "Inputs", *, require_positive_target: bool = True
+) -> Optional[str]:
+    """Backward-compatible name for the pre-start Wake admission gate."""
+
+    return playback_start_block_reason(
+        inp, require_positive_target=require_positive_target
+    )
+
+
+def playback_repair_block_reason(
+    inp: "Inputs",
+    *,
+    managed_episode: bool,
+    require_positive_target: bool = True,
+) -> Optional[str]:
+    """Fail-closed gate for unmute/health work after a managed start.
+
+    ``homepods_resume_allowed`` is intentionally absent: it is a transient start
+    permission and normally falls back to false once playback is running. Repair
+    instead needs durable evidence for a managed episode and every current safety
+    condition. This also prevents a future intentional mute/ducking path from
+    being undone without an explicit contract.
+    """
+
+    if not managed_episode:
+        return "ownership_unproven"
+    if not inp.apply_enabled:
+        return "apply_disabled"
+    blocked = media_block_reason(inp)
+    if blocked:
+        return blocked
+    if presence_holds(inp):
+        return "presence_unknown"
+    if inp.bio_sleep is True or inp.bio_state in BIO_SLEEP_CONTEXT_VALUES:
+        return "sleep_context"
+    if inp.bio_state not in ("waking", "awake"):
+        return "bio_state_unproven"
+    if inp.stop_latch:
+        return "stop_latch"
+    if inp.action == ACTION_PAUSE or inp.homepods_should_pause:
+        return "policy_pause"
+    if not inp.volume_apply_allowed:
+        return "volume_apply_not_allowed"
+    if inp.quiet_mode:
+        return "intentional_ducking"
+    if inp.suppress_homepods_start:
+        return "start_suppressed"
+    if inp.radio_ready is not True:
+        return "radio_not_ready"
+    if inp.manual_playback is not False:
+        return "manual_playback" if inp.manual_playback else "manual_playback_unproven"
+    owner = (inp.audio_owner or "").strip().lower()
+    if owner != "homepods":
+        return (
+            "competing_audio_owner"
+            if owner not in ("", "unknown", "unavailable", "none")
+            else "audio_owner_unproven"
+        )
+    if require_positive_target and (
+        inp.homepods_target is None or inp.homepods_target <= 0.0
+    ):
+        return "non_positive_target"
+    return None
+
+
+def stuck_mute_targets(
+    *,
+    group_state: Optional[str],
+    entity_ids: Sequence[str],
+    pod_states: Sequence[Optional[str]],
+    pod_muted: Sequence[Optional[bool]],
+) -> tuple[str, ...]:
+    """Return only configured, playing members with an evidenced mute flag."""
+
+    if group_state not in PLAYER_PLAYING_VALUES:
+        return ()
+    return tuple(
+        entity_id
+        for entity_id, state, muted in zip(entity_ids, pod_states, pod_muted)
+        if state in PLAYER_PLAYING_VALUES and muted is True
+    )
+
+
+async def bounded_unmute(
+    targets: Sequence[str],
+    *,
+    unmute: Callable[[tuple[str, ...]], Awaitable[None]],
+    remaining_muted: Callable[[], tuple[str, ...]],
+    wait: Callable[[float], Awaitable[None]],
+    block_reason: Callable[[], Optional[str]],
+    max_attempts: int = 2,
+    retry_delay: float = 2.0,
+) -> UnmuteResult:
+    """Unmute, re-read actual state and retry a small bounded number of times."""
+
+    remaining = tuple(dict.fromkeys(targets))
+    if not remaining:
+        return UnmuteResult("not_needed", 0)
+    attempts = 0
+    for _ in range(max(1, int(max_attempts))):
+        reason = block_reason()
+        if reason is not None:
+            return UnmuteResult("cancelled", attempts, remaining, reason)
+        attempts += 1
+        try:
+            await unmute(remaining)
+        except Exception as err:  # noqa: BLE001 - returned as bounded diagnostics.
+            if attempts >= max(1, int(max_attempts)):
+                return UnmuteResult(
+                    "failed", attempts, remaining, f"unmute_service_failed:{err}"
+                )
+        await wait(max(0.0, float(retry_delay)))
+        remaining = tuple(dict.fromkeys(remaining_muted()))
+        if not remaining:
+            return UnmuteResult("recovered", attempts)
+    return UnmuteResult("failed", attempts, remaining, "mute_state_stuck")
+
+
 def playback_health(
     *,
     group_state: Optional[str],
@@ -457,6 +586,8 @@ def playback_health(
     for index, muted in enumerate(pod_muted):
         if muted is True:
             return PlaybackHealth("unhealthy", f"pod_{index + 1}_muted")
+        if muted is not False:
+            return PlaybackHealth("unhealthy", f"pod_{index + 1}_mute_unknown")
     return PlaybackHealth("healthy")
 
 
